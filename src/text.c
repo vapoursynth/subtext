@@ -486,7 +486,7 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
 
     vsapi->mapConsumeFrame(vsapi->getFramePropertiesRW(frame), "_Alpha", alpha, maAppend);
 
-    d->lastframe = frame;
+    d.lastframe = frame;
 
     data = malloc(sizeof(d));
     *data = d;
