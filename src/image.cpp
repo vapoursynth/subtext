@@ -10,8 +10,8 @@ extern "C" {
 #include <libavutil/opt.h>
 }
 
-#include "VapourSynth4.h"
-#include "VSHelper4.h"
+#include <VapourSynth4.h>
+#include <VSHelper4.h>
 
 #include "common.h"
 
@@ -20,7 +20,7 @@ static const int64_t unused_colour = (int64_t)1 << 42;
 
 
 typedef struct Subtitle {
-    std::vector<AVPacket> packets;
+    std::vector<AVPacket *> packets;
     int start_frame;
     int end_frame; // Actually first frame where subtitle is not displayed.
 } Subtitle;
@@ -105,9 +105,9 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
                     AVSubtitle avsub;
 
                     for (size_t i = 0; i < sub.packets.size(); i++) {
-                        AVPacket packet = sub.packets[i];
+                        AVPacket *packet = sub.packets[i];
 
-                        avcodec_decode_subtitle2(d->avctx, &avsub, &got_subtitle, &packet);
+                        avcodec_decode_subtitle2(d->avctx, &avsub, &got_subtitle, packet);
 
                         if (got_subtitle)
                             avsubtitle_free(&avsub);
@@ -124,9 +124,9 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
             AVSubtitle avsub;
 
             for (size_t i = 0; i < sub.packets.size(); i++) {
-                AVPacket packet = sub.packets[i];
+                AVPacket *packet = sub.packets[i];
 
-                if (avcodec_decode_subtitle2(d->avctx, &avsub, &got_subtitle, &packet) < 0) {
+                if (avcodec_decode_subtitle2(d->avctx, &avsub, &got_subtitle, packet) < 0) {
                     vsapi->setFilterError((d->filter_name + ": Failed to decode subtitle.").c_str(), frameCtx);
 
                     vsapi->freeFrame(rgb);
@@ -169,13 +169,8 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
                 if (rect->w <= 0 || rect->h <= 0 || rect->type != SUBTITLE_BITMAP)
                     continue;
 
-#ifdef VS_HAVE_AVSUBTITLERECT_AVPICTURE
-                uint8_t **rect_data = rect->pict.data;
-                int *rect_linesize = rect->pict.linesize;
-#else
                 uint8_t **rect_data = rect->data;
                 int *rect_linesize = rect->linesize;
-#endif
 
                 uint32_t palette[AVPALETTE_COUNT];
                 memcpy(palette, rect_data[1], AVPALETTE_SIZE);
@@ -192,7 +187,7 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
                 uint8_t *dst_r = vsapi->getWritePtr(rgb, 0);
                 uint8_t *dst_g = vsapi->getWritePtr(rgb, 1);
                 uint8_t *dst_b = vsapi->getWritePtr(rgb, 2);
-                int stride = vsapi->getStride(rgb, 0);
+                ptrdiff_t stride = vsapi->getStride(rgb, 0);
 
                 dst_a += rect->y * stride + rect->x;
                 dst_r += rect->y * stride + rect->x;
@@ -245,9 +240,9 @@ static void VS_CC imageFileFree(void *instanceData, VSCore *core, const VSAPI *v
     vsapi->freeFrame(d->blank_alpha);
     vsapi->freeFrame(d->last_frame);
 
-    for (auto sub = d->subtitles.begin(); sub != d->subtitles.end(); sub++)
-        for (auto packet = sub->packets.begin(); packet != sub->packets.end(); packet++)
-            av_packet_unref(&(*packet));
+    for (auto &sub : d->subtitles)
+        for (auto &packet : sub.packets)
+            av_packet_free(&packet);
 
     avcodec_close(d->avctx);
     avcodec_free_context(&d->avctx);
@@ -466,24 +461,21 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
 
     Subtitle current_subtitle = { };
 
-    AVPacket packet;
-    av_init_packet(&packet);
+    AVPacket *packet = av_packet_alloc();
 
     AVSubtitle avsub;
 
-    while (av_read_frame(fctx, &packet) == 0) {
-        if (packet.stream_index != stream_index) {
-            av_packet_unref(&packet);
+    while (av_read_frame(fctx, packet) == 0) {
+        if (packet->stream_index != stream_index) {
+            av_packet_unref(packet);
             continue;
         }
 
         int got_avsub = 0;
 
-        AVPacket decoded_packet = packet;
-
-        ret = avcodec_decode_subtitle2(d.avctx, &avsub, &got_avsub, &decoded_packet);
+        ret = avcodec_decode_subtitle2(d.avctx, &avsub, &got_avsub, packet);
         if (ret < 0) {
-            av_packet_unref(&packet);
+            av_packet_unref(packet);
             continue;
         }
 
@@ -491,13 +483,13 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
             const AVRational &time_base = fctx->streams[stream_index]->time_base;
 
             if (avsub.num_rects) {
-                current_subtitle.packets.push_back(packet);
+                current_subtitle.packets.push_back(av_packet_clone(packet));
 
-                int64_t start_time = current_subtitle.packets.front().pts;
+                int64_t start_time = current_subtitle.packets.front()->pts;
                 if (fctx->streams[stream_index]->codecpar->codec_id == AV_CODEC_ID_DVD_SUBTITLE) {
                     start_time += avsub.start_display_time;
 
-                    current_subtitle.end_frame = timestampToFrameNumber(packet.pts + avsub.end_display_time, time_base, d.vi.fpsNum, d.vi.fpsDen);
+                    current_subtitle.end_frame = timestampToFrameNumber(packet->pts + avsub.end_display_time, time_base, d.vi.fpsNum, d.vi.fpsDen);
                     // If it doesn't say when it should end, display it until the next one.
                     if (avsub.end_display_time == 0)
                         current_subtitle.end_frame = 0;
@@ -510,21 +502,23 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
             } else {
                 Subtitle &previous_subtitle = d.subtitles.back();
                 if (d.subtitles.size()) // The first AVSubtitle may be empty.
-                    previous_subtitle.end_frame = timestampToFrameNumber(current_subtitle.packets.front().pts, time_base, d.vi.fpsNum, d.vi.fpsDen);
+                    previous_subtitle.end_frame = timestampToFrameNumber(current_subtitle.packets.front()->pts, time_base, d.vi.fpsNum, d.vi.fpsDen);
 
                 for (auto p : current_subtitle.packets)
-                    av_packet_unref(&p);
+                    av_packet_free(&p);
 
                 current_subtitle.packets.clear();
 
-                av_packet_unref(&packet);
+                av_packet_unref(packet);
             }
 
             avsubtitle_free(&avsub);
         } else {
-            current_subtitle.packets.push_back(packet);
+            current_subtitle.packets.push_back(av_packet_clone(packet));
         }
     }
+
+    av_packet_free(&packet);
 
     if (d.subtitles.size() == 0) {
         vsapi->mapSetError(out, (d.filter_name + ": no usable subtitle pictures found.").c_str());

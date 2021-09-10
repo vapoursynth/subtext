@@ -1,15 +1,15 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#include "VapourSynth4.h"
-#include "VSHelper4.h"
+#include <VapourSynth4.h>
+#include <VSHelper4.h>
 
 
 void blendSubtitles(VSNode *clip, VSNode *subs, const VSMap *in, VSMap *out, const char *filter_name, char *error, size_t error_size, VSCore *core, const VSAPI *vsapi) {
     int err;
 
-    VSPlugin *std_plugin = vsapi->getPluginByID("com.vapoursynth.std", core);
-    VSPlugin *resize_plugin = vsapi->getPluginByID("com.vapoursynth.resize", core);
+    VSPlugin *std_plugin = vsapi->getPluginByID(VSH_STD_PLUGIN_ID, core);
+    VSPlugin *resize_plugin = vsapi->getPluginByID(VSH_RESIZE_PLUGIN_ID, core);
 
     VSMap *args, *ret;
 

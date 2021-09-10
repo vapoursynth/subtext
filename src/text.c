@@ -21,8 +21,8 @@
 #include <time.h>
 #include <inttypes.h>
 
-#include "VapourSynth4.h"
-#include "VSHelper4.h"
+#include <VapourSynth4.h>
+#include <VSHelper4.h>
 
 #include "common.h"
 
@@ -126,7 +126,7 @@ static void assRender(VSFrame *dst, VSFrame *alpha, const VSAPI *vsapi,
                       ASS_Image *img)
 {
     uint8_t *planes[4];
-    int strides[4], p;
+    ptrdiff_t strides[4], p;
 
     for(p = 0; p < 4; p++) {
         VSFrame *fr = p == 3 ? alpha : dst;
@@ -269,7 +269,8 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
 
 #define ERROR_SIZE 512
     char error[ERROR_SIZE] = { 0 };
-
+    
+    d.ass = NULL;
     d.lastn = -1;
     d.node = vsapi->mapGetNode(in, "clip", 0, 0);
     d.vi[0] = *vsapi->getVideoInfo(d.node);
@@ -394,9 +395,9 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
         ass_set_line_spacing(d.ass_renderer, d.linespacing);
 
     if(d.sar) {
-        ass_set_aspect_ratio(d.ass_renderer,
+        ass_set_pixel_aspect(d.ass_renderer,
                              (double)d.vi[0].width /
-                             d.vi[0].height * d.sar, 1);
+                             d.vi[0].height * d.sar);
     }
 
     if(d.fontdir)
@@ -486,7 +487,7 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
 
     vsapi->mapConsumeFrame(vsapi->getFramePropertiesRW(frame), "_Alpha", alpha, maAppend);
 
-    d->lastframe = frame;
+    d.lastframe = frame;
 
     data = malloc(sizeof(d));
     *data = d;

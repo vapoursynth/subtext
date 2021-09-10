@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-#include "VapourSynth4.h"
+#include <VapourSynth4.h>
 
 #ifdef __cplusplus
 extern "C" {
