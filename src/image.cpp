@@ -456,8 +456,8 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
         return;
     }
 
-
-    av_opt_get_image_size(fctx->streams[stream_index]->codecpar, "video_size", 0, &d.vi.width, &d.vi.height);
+    d.vi.width = fctx->streams[stream_index]->codecpar->width;
+    d.vi.height = fctx->streams[stream_index]->codecpar->height;
 
     Subtitle current_subtitle = { };
 
