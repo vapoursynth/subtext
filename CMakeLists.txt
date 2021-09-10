@@ -12,9 +12,13 @@ FetchContent_Declare(VapourSynth
 FetchContent_MakeAvailable(VapourSynth)
 
 find_package(Iconv REQUIRED)
-find_package(FFmpeg COMPONENTS AVCODEC AVFORMAT AVUTIL REQUIRED)
 find_package(PkgConfig REQUIRED)
-PKG_CHECK_MODULES(LIBASS REQUIRED libass>=0.12.0)
+pkg_check_modules(LIBAV REQUIRED
+    libavcodec
+    libavformat
+    libavutil
+)
+pkg_check_modules(LIBASS REQUIRED libass>=0.12.0)
 
 add_library(subtext SHARED
     "src/common.c"
@@ -23,5 +27,5 @@ add_library(subtext SHARED
     "src/toass.cpp"
     "src/toutf8.c"
 )
-target_include_directories(subtext PRIVATE "${vapoursynth_SOURCE_DIR}/include" ${FFMPEG_INCLUDE_DIRS} ${LIBASS_INCLUDE_DIRS})
-target_link_libraries(subtext PRIVATE Iconv::Iconv ${FFMPEG_LIBRARIES} ${LIBASS_LINK_LIBRARIES})
+target_include_directories(subtext PRIVATE "${vapoursynth_SOURCE_DIR}/include" ${LIBAV_INCLUDE_DIRS} ${LIBASS_INCLUDE_DIRS})
+target_link_libraries(subtext PRIVATE Iconv::Iconv ${LIBAV_LINK_LIBRARIES} ${LIBASS_LINK_LIBRARIES})
