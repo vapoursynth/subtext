@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.15) # for cmake policy CMP0091 https://cmake.org/cmake/help/latest/policy/CMP0091.html#policy:CMP0091
 project(subtext)
 
 set(CMAKE_C_STANDARD 11)
