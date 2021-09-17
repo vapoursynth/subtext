@@ -211,6 +211,7 @@ static const VSFrame *VS_CC assGetFrame(int n, int activationReason,
                                                  NULL, core);
 
             assRender(dst, a, vsapi, img);
+            vsapi->mapSetInt(vsapi->getFramePropertiesRW(a), "_ColorRange", 0, maReplace);
             vsapi->mapConsumeFrame(vsapi->getFramePropertiesRW(dst), "_Alpha", a, maAppend);
             vsapi->freeFrame(d->lastframe);
             d->lastframe = dst;
