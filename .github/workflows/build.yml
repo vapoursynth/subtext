@@ -1,0 +1,47 @@
+name: Build-Windows
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: cmd
+    strategy:
+      matrix:
+        include:
+        - vcpkg_target: 'x86'
+          platform: 'Win32'
+        - vcpkg_target: 'x64'
+          platform: 'x64'
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup msbuild
+      uses: microsoft/setup-msbuild@v1
+    - name: Setup vcpkg
+      run: |
+        git clone https://github.com/microsoft/vcpkg.git vcpkg-customed
+        cd vcpkg-customed
+        git remote add libass-fix-pc https://github.com/Masaiki/vcpkg.git
+        git fetch libass-fix-pc
+        git config --local user.email "vapoursynth-subtext@vapoursynth.com"
+        git config --local user.name "github-action[bot]"
+        git cherry-pick 3f951f7 c2c719a 689c9ad 00b4a05
+        git revert --no-edit dd6fd59
+        bootstrap-vcpkg.bat
+    - name: Build ffmpeg iconv libass
+      run: |
+        vcpkg-customed\vcpkg install --triplet ${{matrix.vcpkg_target}}-windows-static ffmpeg[avcodec,avformat] libiconv fontconfig
+        vcpkg-customed\vcpkg install --triplet ${{matrix.vcpkg_target}}-windows-static libass[asm]
+    - name: Configure
+      run: |
+        cmake -S. -Bbuild -A${{matrix.platform}} -DCMAKE_TOOLCHAIN_FILE=vcpkg-customed/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{matrix.vcpkg_target}}-windows-static -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+    - name: Build
+      run: MSBuild.exe /t:Rebuild /p:WindowsTargetPlatformVersion=10.0.18362.0 /p:PlatformToolset=v142 /m /p:Configuration=Release /p:Platform=${{matrix.platform}} subtext.sln
+      working-directory: build
+    - name: Upload
+      uses: actions/upload-artifact@v2
+      with:
+        name: subtext-cmake-vcpkg-windows-${{matrix.vcpkg_target}}
+        path: build/Release/subtext.dll
