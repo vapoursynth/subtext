@@ -1,0 +1,39 @@
+name: Build
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: cmd
+    strategy:
+      matrix:
+        include:
+        - vcpkg_target: 'x86'
+          platform: 'Win32'
+        - vcpkg_target: 'x64'
+          platform: 'x64'
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup msbuild
+      uses: microsoft/setup-msbuild@v1
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v7
+      with:
+        vcpkgGitCommitId: 8ad33ead9075cd8d6d357e0b870ba8d501efe35c
+        vcpkgDirectory: ${{runner.workspace}}/vcpkg/
+        vcpkgArguments: ffmpeg[avcodec,avformat] libiconv libass
+        vcpkgTriplet: ${{matrix.vcpkg_target}}-windows-static
+    - name: Configure
+      run: |
+        cmake -S. -Bbuild -A${{matrix.platform}} -DCMAKE_TOOLCHAIN_FILE=${{runner.workspace}}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{matrix.vcpkg_target}}-windows-static -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+    - name: Build
+      run: MSBuild.exe /t:Rebuild /p:WindowsTargetPlatformVersion=10.0.18362.0 /p:PlatformToolset=v142 /m /p:Configuration=Release /p:Platform=${{matrix.platform}} subtext.sln
+      working-directory: build
+    - name: Upload
+      uses: actions/upload-artifact@v2
+      with:
+        name: subtext-cmake-vcpkg-windows-${{matrix.vcpkg_target}}
+        path: build/Release/subtext.dll
