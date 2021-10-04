@@ -158,7 +158,7 @@ Subtext is a subtitle renderer that uses libass and ffmpeg.
 Example with manual blending::
 
    sub = core.sub.TextFile(clip=YUV420P10_video, file="asdf.ass", blend=False)
-   mask = sub.std.PropToClip('_Alpha')
+   mask = core.std.PropToClip(clip=sub, prop='_Alpha')
 
    gray10 = core.query_video_format(
       mask.format.color_family,
