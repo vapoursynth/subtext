@@ -11,10 +11,9 @@ Subtext is a subtitle renderer that uses libass and ffmpeg.
 
    TextFile has two modes of operation. With blend=True (the default),
    it returns *clip* with the subtitles burned in. With blend=False, it
-   returns a list of two clips. The first one is an RGB24 clip
-   containing the rendered subtitles. The second one is a Gray8 clip
-   containing a mask, to be used for blending the rendered subtitles
-   into other clips.
+   returns an RGB24 clip containing the rendered subtitles, with a Gray8
+   frame attached to each frame in the ``_Alpha`` frame property. These
+   Gray8 frames can be extracted using std.PropToClip.
 
    Parameters:
       clip
@@ -98,12 +97,6 @@ Subtext is a subtitle renderer that uses libass and ffmpeg.
 
    ImageFile renders image-based subtitles such as VOBSUB and PGS.
 
-   ImageFile has two modes of operation. With blend=True (the default),
-   it returns *clip* with the subtitles burned in. With blend=False, it
-   returns an RGB24 clip containing the rendered subtitles, with a Gray8
-   frame attached to each frame in the ``_Alpha`` frame property. These
-   Gray8 frames can be extracted using std.PropToClip.
-
    Parameters:
       *clip*
          If *blend* is True, the subtitles will be burned into this
@@ -164,18 +157,21 @@ Subtext is a subtitle renderer that uses libass and ffmpeg.
 
 Example with manual blending::
 
-   subs = core.sub.TextFile(clip=YUV420P10_video, file="asdf.ass", blend=False)
+   sub = core.sub.TextFile(clip=YUV420P10_video, file="asdf.ass", blend=False)
+   mask = core.std.PropToClip(clip=sub, prop='_Alpha')
 
-   gray10 = core.query_video_format(subs[1].format.color_family,
-                                 YUV420P10_video.format.sample_type,
-                                 YUV420P10_video.format.bits_per_sample,
-                                 subs[1].format.subsampling_w,
-                                 subs[1].format.subsampling_h)
+   gray10 = core.query_video_format(
+      mask.format.color_family,
+      YUV420P10_video.format.sample_type,
+      YUV420P10_video.format.bits_per_sample,
+      mask.format.subsampling_w,
+      mask.format.subsampling_h
+   )
 
-   subs[0] = core.resize.Bicubic(clip=subs[0], format=YUV420P10_video.format.id, matrix_s="470bg")
-   subs[1] = core.resize.Bicubic(clip=subs[1], format=gray10.id)
+   sub = core.resize.Bicubic(clip=sub, format=YUV420P10_video.format.id, matrix_s="470bg")
+   mask = core.resize.Bicubic(clip=mask, format=gray10.id)
 
-   hardsubbed_video = core.std.MaskedMerge(clipa=YUV420P10_video, clipb=subs[0], mask=subs[1])
+   hardsubbed_video = core.std.MaskedMerge(clipa=YUV420P10_video, clipb=sub, mask=mask)
 
 Example with automatic blending (will use BT709 matrix)::
 
