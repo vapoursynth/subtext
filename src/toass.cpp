@@ -49,7 +49,7 @@ int64_t MemoryFile::seek(void *opaque, int64_t offset, int whence) {
 int MemoryFile::readPacket(void *opaque, uint8_t *buf, int bytes_to_read) {
     MemoryFile *mf = (MemoryFile *)opaque;
 
-    int bytes_read = std::min((int64_t)bytes_to_read, mf->total_size - mf->current_position);
+    int bytes_read = static_cast<int>(std::min<int64_t>(bytes_to_read, mf->total_size - mf->current_position));
 
     memcpy(buf, mf->data + mf->current_position, bytes_read);
 
@@ -216,6 +216,8 @@ extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, 
 
     AVPacket *packet = av_packet_alloc();
 
+    ASS_Track *track = ass_read_memory(ass_library, (char *)ass_file.c_str(), ass_file.size(), nullptr);
+
     AVSubtitle avsub;
 
     int total_events = 0;
@@ -247,7 +249,7 @@ extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, 
                 continue;
             }
 
-            ass_file += rect->ass;
+            ass_process_chunk(track, rect->ass, static_cast<int>(strlen(rect->ass)), packet->pts + avsub.start_display_time, avsub.end_display_time - avsub.start_display_time);
         }
 
         avsubtitle_free(&avsub);
@@ -260,11 +262,9 @@ extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, 
 
     if (failed_decoding > 0) {
         snprintf(error, error_size, "failed to decode %d events out of %d. Are you sure '%s' is the correct charset?", failed_decoding, total_events, charset);
-
+        ass_free_track(track);
         return nullptr;
     }
-
-    ASS_Track *track = ass_read_memory(ass_library, (char *)ass_file.c_str(), ass_file.size(), nullptr);
 
     return track;
 }

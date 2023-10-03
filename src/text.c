@@ -486,6 +486,8 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
         memset(vsapi->getWritePtr(frame, plane), 0, vsapi->getStride(frame, plane) * vsapi->getFrameHeight(frame, plane));
     memset(vsapi->getWritePtr(alpha, 0), 0, vsapi->getStride(alpha, 0) *vsapi->getFrameHeight(alpha, 0));
 
+    vsapi->mapSetInt(vsapi->getFramePropertiesRW(alpha), "_ColorRange", 0, maAppend);
+
     vsapi->mapConsumeFrame(vsapi->getFramePropertiesRW(frame), "_Alpha", alpha, maAppend);
 
     d.lastframe = frame;

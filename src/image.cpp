@@ -667,7 +667,7 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
 
         VSMap *args = vsapi->createMap();
         vsapi->mapConsumeNode(args, "clip", vsapi->mapGetNode(out, "clip", 0, nullptr), maReplace);
-        vsapi->mapSetData(args, "text", desc.c_str(), desc.size(), dtUtf8, maReplace);
+        vsapi->mapSetData(args, "text", desc.c_str(), static_cast<int>(desc.size()), dtUtf8, maReplace);
 
         VSMap *vsret = vsapi->invoke(text_plugin, "Text", args);
         vsapi->freeMap(args);
