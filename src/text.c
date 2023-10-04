@@ -520,7 +520,7 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
     vspapi->configPlugin("biz.srsfckn.subtext", "sub",
         "A subtitling filter based on libass and FFmpeg.",
-        VS_MAKE_VERSION(1, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+        VS_MAKE_VERSION(5, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
 
 #define COMMON_TEXTFILE_PARAMS \
     "debuglevel:int:opt;" \
