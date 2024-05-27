@@ -41,7 +41,7 @@ typedef struct ImageFileData {
 
     std::vector<Subtitle> subtitles;
 
-    std::vector<int64_t> palette;
+    std::vector<uint32_t> palette;
 
     bool gray;
 
@@ -326,7 +326,7 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
 
                 return;
             }
-            d.palette[i] = palette[i];
+            d.palette[i] = static_cast<uint32_t>(palette[i]);
         }
     }
 
