@@ -388,6 +388,7 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
 
     ass_set_font_scale(d.ass_renderer, d.scale);
     ass_set_frame_size(d.ass_renderer, d.vi[0].width, d.vi[0].height);
+    ass_set_storage_size(d.ass_renderer, d.vi[0].width, d.vi[0].height);
     ass_set_margins(d.ass_renderer,
                     d.margins[0], d.margins[1], d.margins[2], d.margins[3]);
     ass_set_use_margins(d.ass_renderer, 0);
