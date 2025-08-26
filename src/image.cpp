@@ -244,7 +244,6 @@ static void VS_CC imageFileFree(void *instanceData, VSCore *core, const VSAPI *v
         for (auto &packet : sub.packets)
             av_packet_free(&packet);
 
-    avcodec_close(d->avctx);
     avcodec_free_context(&d->avctx);
 
     delete d;
