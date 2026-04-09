@@ -1,26 +1,19 @@
 project('SubText', 'c', 'cpp',
-    default_options: ['buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'cpp_std=c++17'],
+    default_options: [
+        'buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'c_std=c99', 'cpp_std=c++17',
+    ],
     license: 'MIT',
     license_files: 'LICENSE',
     meson_version: '>=1.2.3',
     version: '6.0',
 )
 
-sources = [
-     'src/common.c',
-     'src/common.h',
-     'src/image.cpp',
-     'src/text.c',
-     'src/toass.cpp',
-     'src/toutf8.c'
+deps = [
+    dependency('libass', version: '>=0.12.0'),
+    dependency('libavcodec'),
+    dependency('libavformat'),
+    dependency('libavutil'),
 ]
-
-libass_dep = dependency('libass', version: '>=0.12.0')
-libavcodec_dep = dependency('libavcodec')
-libavutil_dep = dependency('libavutil')
-libavformat_dep = dependency('libavformat')
-
-deps = [libass_dep, libavcodec_dep, libavutil_dep, libavformat_dep]
 
 incdir = include_directories(
     run_command(
@@ -31,14 +24,21 @@ incdir = include_directories(
     ).stdout().strip(),
 )
 
+link_args = []
+
 py = import('python').find_installation(pure: false)
 
-shared_module('dmetrics',
-    sources,
-    dependencies : deps,
+if meson.get_compiler('cpp').get_linker_id() in ['ld.bfd', 'ld.gold', 'ld.mold']
+    link_args += '-Wl,-Bsymbolic'
+endif
+
+shared_module('subtext',
+    files('src/common.c', 'src/image.cpp', 'src/text.c', 'src/toass.cpp', 'src/toutf8.c'),
+    dependencies: deps,
     gnu_symbol_visibility: 'hidden',
     include_directories: incdir,
     install: true,
     install_dir: py.get_install_dir() / 'vapoursynth/plugins',
+    link_args: link_args,
     name_prefix: '',
 )
