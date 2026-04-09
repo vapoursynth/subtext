@@ -21,17 +21,15 @@ jobs:
 
     steps:
     - uses: actions/checkout@v6
-      with:
-        submodules: recursive
 
     - uses: pypa/cibuildwheel@v3.4.0
       env:
-        CIBW_BUILD: cp312-*
-        CIBW_SKIP: cp312-musllinux*
-        CIBW_CONFIG_SETTINGS: setup-args="-Db_lto=true"
+        CIBW_BUILD: cp314-*
+        CIBW_SKIP: cp314-musllinux*
+        CIBW_BUILD_FRONTEND: uv
         CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=15
         CIBW_BEFORE_ALL_LINUX: >
-          dnf -y install nasm &&
+          dnf -y install libass-devel nasm &&
           git clone https://git.ffmpeg.org/ffmpeg.git --branch n8.1 --depth 1 &&
           cd ffmpeg &&
           ./configure --enable-gpl --enable-version3 --disable-programs --disable-doc --disable-avdevice --disable-swresample --disable-swscale --disable-avfilter --disable-encoders --disable-muxers --enable-pic --disable-debug &&
@@ -40,7 +38,7 @@ jobs:
           cd .. &&
           rm -rf ffmpeg
         CIBW_BEFORE_ALL_MACOS: >
-          brew install nasm &&
+          brew install libass nasm &&
           git clone https://git.ffmpeg.org/ffmpeg.git --branch n8.1 --depth 1 &&
           cd ffmpeg &&
           ./configure --enable-gpl --enable-version3 --disable-programs --disable-doc --disable-avdevice --disable-swresample --disable-swscale --disable-avfilter --disable-encoders --disable-muxers --enable-pic --disable-debug &&
@@ -50,6 +48,7 @@ jobs:
           rm -rf ffmpeg
       with:
         output-dir: dist
+        extras: uv
 
     - name: Fix tag
       run: |
@@ -72,8 +71,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v6
-      with:
-        submodules: recursive
 
     - uses: msys2/setup-msys2@v2
       with:
@@ -82,11 +79,11 @@ jobs:
         install: >-
           mingw-w64-clang-x86_64-autotools
           mingw-w64-clang-x86_64-git
+          mingw-w64-clang-x86_64-libass
           mingw-w64-clang-x86_64-nasm
-          mingw-w64-clang-x86_64-meson
-          mingw-w64-clang-x86_64-python-build
-          mingw-w64-clang-x86_64-python-wheel
+          mingw-w64-clang-x86_64-ninja
           mingw-w64-clang-x86_64-toolchain
+          mingw-w64-clang-x86_64-uv
 
     - name: Install FFmpeg
       run: |
@@ -99,13 +96,13 @@ jobs:
 
     - name: Build
       run: |
-        python -m build -Csetup-args="-Dprefer_static=true" -Csetup-args="-Db_lto=true" -Csetup-args="-Dcpp_link_args=-static"
+        uv build -Csetup-args="-Dprefer_static=true" -Csetup-args="-Dcpp_link_args=-static"
 
     - name: Fix tag
       run: |
         cd dist
         for whl in *.whl; do
-          wheel tags --remove --python-tag py3 --abi-tag none --platform-tag win_amd64 $whl
+          uvx wheel tags --remove --python-tag py3 --abi-tag none $whl
         done
 
     - uses: actions/upload-artifact@v7
