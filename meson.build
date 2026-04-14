@@ -1,6 +1,6 @@
 project('SubText', 'c', 'cpp',
     default_options: [
-        'buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'c_std=c99', 'cpp_std=c++17',
+        'buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'c_std=c11', 'cpp_std=c++17',
     ],
     license: 'MIT',
     license_files: 'LICENSE',
