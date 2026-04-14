@@ -15,18 +15,13 @@ deps = [
     dependency('libavutil'),
 ]
 
+py = import('python').find_installation(pure: false)
+
 incdir = include_directories(
-    run_command(
-        find_program('python', 'python3'),
-        '-c',
-        'import vapoursynth as vs; print(vs.get_include())',
-        check: true,
-    ).stdout().strip(),
+    run_command(py, '-c', 'import vapoursynth as vs; print(vs.get_include())', check: true).stdout().strip(),
 )
 
 link_args = []
-
-py = import('python').find_installation(pure: false)
 
 if meson.get_compiler('cpp').get_linker_id() in ['ld.bfd', 'ld.gold', 'ld.mold']
     link_args += '-Wl,-Bsymbolic'
