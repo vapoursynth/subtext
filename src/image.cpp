@@ -7,7 +7,6 @@
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
-#include <libavutil/opt.h>
 }
 
 #include <VapourSynth4.h>
@@ -41,7 +40,7 @@ typedef struct ImageFileData {
 
     std::vector<Subtitle> subtitles;
 
-    std::vector<uint32_t> palette;
+    std::vector<int64_t> palette;
 
     bool gray;
 
@@ -176,7 +175,7 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
                 memcpy(palette, rect_data[1], AVPALETTE_SIZE);
                 for (size_t i = 0; i < d->palette.size(); i++)
                     if (d->palette[i] != unused_colour)
-                        palette[i] = d->palette[i];
+                        palette[i] = static_cast<uint32_t>(d->palette[i]);
 
                 if (d->gray)
                     makePaletteGray(palette);
@@ -325,7 +324,7 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
 
                 return;
             }
-            d.palette[i] = static_cast<uint32_t>(palette[i]);
+            d.palette[i] = palette[i];
         }
     }
 
@@ -499,9 +498,9 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
                 d.subtitles.push_back(current_subtitle);
                 current_subtitle.packets.clear();
             } else {
-                Subtitle &previous_subtitle = d.subtitles.back();
-                if (d.subtitles.size()) // The first AVSubtitle may be empty.
-                    previous_subtitle.end_frame = timestampToFrameNumber(current_subtitle.packets.front()->pts, time_base, d.vi.fpsNum, d.vi.fpsDen);
+                // The first AVSubtitle may be empty, leaving d.subtitles empty here.
+                if (!d.subtitles.empty() && !current_subtitle.packets.empty())
+                    d.subtitles.back().end_frame = timestampToFrameNumber(current_subtitle.packets.front()->pts, time_base, d.vi.fpsNum, d.vi.fpsDen);
 
                 for (auto p : current_subtitle.packets)
                     av_packet_free(&p);
@@ -646,8 +645,8 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
                 desc += language->value;
             }
 
-            int width, height;
-            av_opt_get_image_size(fctx->streams[i]->codecpar, "video_size", 0, &width, &height);
+            int width = fctx->streams[i]->codecpar->width;
+            int height = fctx->streams[i]->codecpar->height;
             desc += ", size: ";
             desc += std::to_string(width);
             desc += "x";
