@@ -1,3 +1,4 @@
+#include <climits>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -114,8 +115,6 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
                     }
                 }
             }
-
-            d->last_subtitle = subtitle_index;
 
             const Subtitle &sub = d->subtitles[subtitle_index];
 
@@ -234,6 +233,9 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
         if (subtitle_index > -1) {
             vsapi->freeFrame(d->last_frame);
             d->last_frame = vsapi->addFrameRef(rgb);
+            // Only updated on success so the frame cache check above can't
+            // hand out a stale or missing frame after a decoding error.
+            d->last_subtitle = subtitle_index;
         }
 
         return rgb;
@@ -506,7 +508,9 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
 
     AVSubtitle avsub;
 
-    while (av_read_frame(fctx, packet) == 0) {
+    int read_ret;
+
+    while ((read_ret = av_read_frame(fctx, packet)) == 0) {
         if (packet->stream_index != stream_index) {
             av_packet_unref(packet);
             continue;
@@ -549,14 +553,16 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
                     av_packet_free(&p);
 
                 current_subtitle.packets.clear();
-
-                av_packet_unref(packet);
             }
 
             avsubtitle_free(&avsub);
         } else {
             current_subtitle.packets.push_back(av_packet_clone(packet));
         }
+
+        // av_read_frame() hands out a new reference every time and the clones
+        // taken above hold their own, so this one must always be released.
+        av_packet_unref(packet);
     }
 
     av_packet_free(&packet);
@@ -566,6 +572,27 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
         av_packet_free(&p);
 
     current_subtitle.packets.clear();
+
+    if (read_ret != AVERROR_EOF) {
+        char av_error[AV_ERROR_MAX_STRING_SIZE] = { 0 };
+
+        if (av_strerror(read_ret, av_error, AV_ERROR_MAX_STRING_SIZE))
+            snprintf(av_error, AV_ERROR_MAX_STRING_SIZE, "unknown error %d", read_ret);
+
+        vsapi->mapSetError(out, (d.filter_name + ": av_read_frame failed: " + av_error + ".").c_str());
+
+        for (auto &sub : d.subtitles)
+            for (auto &p : sub.packets)
+                av_packet_free(&p);
+
+        avformat_close_input(&fctx);
+
+        avcodec_free_context(&d.avctx);
+
+        vsapi->freeNode(d.clip);
+
+        return;
+    }
 
     if (d.subtitles.size() == 0) {
         vsapi->mapSetError(out, (d.filter_name + ": no usable subtitle pictures found.").c_str());

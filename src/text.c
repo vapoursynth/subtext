@@ -440,7 +440,7 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
     ass_set_fonts(d.ass_renderer, NULL, NULL, 1, NULL, 1);
 
     if(d.file == NULL) {
-#define BUFFER_SIZE 16
+#define BUFFER_SIZE 32
         char *str, *text, x[BUFFER_SIZE], y[BUFFER_SIZE], start[BUFFER_SIZE] = { 0 }, end[BUFFER_SIZE] = { 0 };
         size_t siz;
         const char *fmt = "[Script Info]\n"
@@ -467,7 +467,13 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
             return;
         }
 
-        text = strrepl(d.text, "\n", "\\N");
+        // Normalize CRLF and lone CR line endings first so no stray \r
+        // ends up in the dialogue line.
+        char *lf_text = strrepl(d.text, "\r\n", "\n");
+        char *cr_text = strrepl(lf_text, "\r", "\n");
+        free(lf_text);
+        text = strrepl(cr_text, "\n", "\\N");
+        free(cr_text);
 
         siz = (strlen(fmt) + strlen(x) + strlen(y) + strlen(d.style) +
                strlen(start) + strlen(end) + strlen(text)) * sizeof(char);
@@ -558,7 +564,7 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
     vspapi->configPlugin("biz.srsfckn.subtext", "sub",
         "A subtitling filter based on libass and FFmpeg.",
-        VS_MAKE_VERSION(5, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+        VS_MAKE_VERSION(7, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
 
 #define COMMON_TEXTFILE_PARAMS \
     "debuglevel:int:opt;" \

@@ -5,14 +5,15 @@ project('SubText', 'c', 'cpp',
     license: 'MIT',
     license_files: 'LICENSE',
     meson_version: '>=1.2.3',
-    version: '6.0',
+    version: '7.0',
 )
 
 deps = [
-    dependency('libass', version: '>=0.12.0'),
-    dependency('libavcodec'),
-    dependency('libavformat'),
-    dependency('libavutil'),
+    dependency('libass', version: '>=0.17.0'),
+    # FFmpeg 8.x
+    dependency('libavcodec', version: '>=62'),
+    dependency('libavformat', version: '>=62'),
+    dependency('libavutil', version: '>=60'),
 ]
 
 py = import('python').find_installation(pure: false)

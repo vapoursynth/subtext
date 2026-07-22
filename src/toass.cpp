@@ -9,6 +9,7 @@
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/mathematics.h>
 }
 
 
@@ -203,8 +204,11 @@ extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, 
         return nullptr;
     }
 
-    avctx->time_base = av_make_q(1, 1000);
-    avctx->pkt_timebase = avctx->time_base;
+    // Packet timestamps arrive in the demuxer's time base, which varies between
+    // subtitle formats (milliseconds for SRT, centiseconds for JACOsub, frames
+    // for MicroDVD, ...). avcodec_decode_subtitle2() also uses this to convert
+    // packet durations into display durations in milliseconds.
+    avctx->pkt_timebase = fctx->streams[stream_index]->time_base;
 
 
     std::string ass_file;
@@ -254,14 +258,22 @@ extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, 
 
     int total_events = 0;
     int failed_decoding = 0;
+    int read_ret;
 
-    while (av_read_frame(fctx, packet) == 0) {
+    while ((read_ret = av_read_frame(fctx, packet)) == 0) {
         if (packet->stream_index != stream_index) {
             av_packet_unref(packet);
             continue;
         }
 
         total_events++;
+
+        // An event that can't be placed in time is useless.
+        if (packet->pts == AV_NOPTS_VALUE) {
+            av_packet_unref(packet);
+            failed_decoding++;
+            continue;
+        }
 
         int got_avsub = 0;
 
@@ -272,13 +284,16 @@ extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, 
             continue;
         }
 
+        // start_display_time and end_display_time are in ms relative to the pts.
+        int64_t start_ms = av_rescale_q(packet->pts, fctx->streams[stream_index]->time_base, av_make_q(1, 1000));
+
         for (unsigned i = 0; i < avsub.num_rects; i++) {
             AVSubtitleRect *rect = avsub.rects[i];
 
             if (rect->type != SUBTITLE_ASS || !rect->ass || !rect->ass[0])
                 continue;
 
-            ass_process_chunk(track, rect->ass, static_cast<int>(strlen(rect->ass)), packet->pts + avsub.start_display_time, avsub.end_display_time - avsub.start_display_time);
+            ass_process_chunk(track, rect->ass, static_cast<int>(strlen(rect->ass)), start_ms + avsub.start_display_time, avsub.end_display_time - avsub.start_display_time);
         }
 
         avsubtitle_free(&avsub);
@@ -288,6 +303,17 @@ extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, 
     av_packet_free(&packet);
     avcodec_free_context(&avctx);
     avformat_close_input(&fctx);
+
+    if (read_ret != AVERROR_EOF) {
+        char av_error[AV_ERROR_MAX_STRING_SIZE] = { 0 };
+
+        if (av_strerror(read_ret, av_error, AV_ERROR_MAX_STRING_SIZE))
+            snprintf(av_error, AV_ERROR_MAX_STRING_SIZE, "unknown error %d", read_ret);
+
+        snprintf(error, error_size, "av_read_frame failed: %s.", av_error);
+        ass_free_track(track);
+        return nullptr;
+    }
 
     if (failed_decoding > 0) {
         snprintf(error, error_size, "failed to decode %d events out of %d. Are you sure '%s' is the correct charset?", failed_decoding, total_events, charset);
