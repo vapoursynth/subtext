@@ -46,6 +46,26 @@ int64_t MemoryFile::seek(void *opaque, int64_t offset, int whence) {
 }
 
 
+// A custom AVIOContext is never freed by avformat_close_input() or by
+// avformat_open_input()'s failure path, so it has to be taken care of by hand.
+struct AVIOHolder {
+    AVIOContext *ctx;
+    uint8_t *buffer;
+
+    AVIOHolder() : ctx(nullptr), buffer(nullptr) { }
+
+    ~AVIOHolder() {
+        if (ctx) {
+            // The original buffer may have been replaced along the way.
+            av_freep(&ctx->buffer);
+            avio_context_free(&ctx);
+        } else {
+            av_freep(&buffer);
+        }
+    }
+};
+
+
 int MemoryFile::readPacket(void *opaque, uint8_t *buf, int bytes_to_read) {
     MemoryFile *mf = (MemoryFile *)opaque;
 
@@ -67,7 +87,7 @@ extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, 
     memory_file.total_size = contents_size;
 
     AVFormatContext *fctx = nullptr;
-    uint8_t *avio_buffer = nullptr;
+    AVIOHolder avio;
 
     try {
         fctx = avformat_alloc_context();
@@ -76,18 +96,17 @@ extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, 
 
         const int avio_buffer_size = 4 * 1024;
 
-        avio_buffer = (uint8_t *)av_malloc(avio_buffer_size);
-        if (!avio_buffer)
+        avio.buffer = (uint8_t *)av_malloc(avio_buffer_size);
+        if (!avio.buffer)
             throw std::string("failed to allocate buffer for AVIOContext.");
 
-        fctx->pb = avio_alloc_context(avio_buffer, avio_buffer_size, 0, &memory_file, MemoryFile::readPacket, nullptr, MemoryFile::seek);
-        if (!fctx->pb)
+        avio.ctx = avio_alloc_context(avio.buffer, avio_buffer_size, 0, &memory_file, MemoryFile::readPacket, nullptr, MemoryFile::seek);
+        if (!avio.ctx)
             throw std::string("failed to allocate AVIOContext.");
+
+        fctx->pb = avio.ctx;
     } catch (const std::string &e) {
         snprintf(error, error_size, "%s", e.c_str());
-
-        if (!fctx || !fctx->pb)
-            av_freep(&avio_buffer);
 
         if (fctx)
             avformat_free_context(fctx);
@@ -108,7 +127,11 @@ extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, 
     } catch (const std::string &e) {
         char av_error[AV_ERROR_MAX_STRING_SIZE] = { 0 };
 
-        snprintf(error, error_size, "%s%s.", e.c_str(), av_strerror(ret, av_error, AV_ERROR_MAX_STRING_SIZE) ? strerror(ret) : av_error);
+        // ret is an AVERROR, which strerror() knows nothing about.
+        if (av_strerror(ret, av_error, AV_ERROR_MAX_STRING_SIZE))
+            snprintf(av_error, AV_ERROR_MAX_STRING_SIZE, "unknown error %d", ret);
+
+        snprintf(error, error_size, "%s%s.", e.c_str(), av_error);
 
         avformat_close_input(&fctx);
 
@@ -133,6 +156,9 @@ extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, 
 
     try {
         const AVCodecDescriptor *descriptor = avcodec_descriptor_get(codec_id);
+        if (!descriptor)
+            throw std::string("failed to identify the codec of the first stream.");
+
         if (descriptor->type != AVMEDIA_TYPE_SUBTITLE || !(descriptor->props & AV_CODEC_PROP_TEXT_SUB))
             throw std::string("file is not a text subtitle.");
 
@@ -243,11 +269,8 @@ extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, 
         for (unsigned i = 0; i < avsub.num_rects; i++) {
             AVSubtitleRect *rect = avsub.rects[i];
 
-            if (rect->type != SUBTITLE_ASS || !rect->ass || !rect->ass[0]) {
-                avsubtitle_free(&avsub);
-                av_packet_unref(packet);
+            if (rect->type != SUBTITLE_ASS || !rect->ass || !rect->ass[0])
                 continue;
-            }
 
             ass_process_chunk(track, rect->ass, static_cast<int>(strlen(rect->ass)), packet->pts + avsub.start_display_time, avsub.end_display_time - avsub.start_display_time);
         }

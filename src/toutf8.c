@@ -36,9 +36,13 @@ static char *sub_recode(char *data, size_t *size, const char *codepage, char *er
     }
 
     {
-        size_t osize = *size;
+        // The extra byte is for the terminating null byte, which iconv doesn't
+        // write itself. Growing by a fixed amount when the input is empty
+        // guarantees progress.
+        size_t grow = *size ? *size : 64;
+        size_t osize = *size + 1;
         size_t ileft = *size;
-        size_t oleft = *size - 1;
+        size_t oleft = osize - 1;
         char *ip;
         char *op;
         size_t rc;
@@ -64,17 +68,17 @@ static char *sub_recode(char *data, size_t *size, const char *codepage, char *er
             if (rc == (size_t) (-1)) {
                 if (errno == E2BIG) {
                     size_t offset = op - outbuf;
-                    char *nbuf = realloc(outbuf, osize + *size);
+                    char *nbuf = realloc(outbuf, osize + grow);
                     if (!nbuf) {
                         free(outbuf);
                         outbuf = NULL;
-                        snprintf(error, error_size, "failed to reallocate %zu bytes for iconv.", osize + *size);
+                        snprintf(error, error_size, "failed to reallocate %zu bytes for iconv.", osize + grow);
                         goto out;
                     }
                     outbuf = nbuf;
                     op = outbuf + offset;
-                    osize += *size;
-                    oleft += *size;
+                    osize += grow;
+                    oleft += grow;
                 } else {
                     snprintf(error, error_size, "failed to convert subtitle file to UTF8, at byte %zu.", (size_t)(ip - data));
                     free(outbuf);
@@ -119,6 +123,11 @@ static int isUtf8(const char *charset) {
 char *convertToUtf8(const char *file_name, const char *charset, int64_t *file_size, char *error, size_t error_size) {
 #ifdef _WIN32
     int required_size = MultiByteToWideChar(CP_UTF8, 0, file_name, -1, NULL, 0);
+    if (required_size <= 0) {
+        snprintf(error, error_size, "file name conversion for _wfopen failed.");
+
+        return NULL;
+    }
     wchar_t *wbuffer = malloc(required_size * sizeof(wchar_t));
     if (!wbuffer) {
         snprintf(error, error_size, "failed to allocate %zu bytes for file name conversion for _wfopen.", required_size * sizeof(wchar_t));
@@ -194,9 +203,13 @@ char *convertToUtf8(const char *file_name, const char *charset, int64_t *file_si
 
 
     if (charset && !isUtf8(charset)) {
-        char *utf8_contents = sub_recode(contents, (size_t *)file_size, charset, error, error_size);
+        size_t size = (size_t)*file_size;
+        char *utf8_contents = sub_recode(contents, &size, charset, error, error_size);
         free(contents);
         contents = utf8_contents;
+
+        if (contents)
+            *file_size = size;
     }
 
     return contents;

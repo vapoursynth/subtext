@@ -73,42 +73,43 @@ typedef struct AssData AssData;
 
 static char *strrepl(const char *in, const char *str, const char *repl)
 {
-    size_t siz;
+    size_t in_len = strlen(in);
+    size_t str_len = strlen(str);
+    size_t repl_len = strlen(repl);
+    size_t siz, count = 0;
     char *res, *outptr;
     const char *inptr;
-    int count = 0;
 
     inptr = in;
 
-    while((inptr = strstr(inptr, str))) {
-        count++;
-        inptr++;
+    if(str_len) {
+        while((inptr = strstr(inptr, str))) {
+            count++;
+            inptr += str_len;
+        }
     }
 
-    if(count == 0) {
-        size_t in_len = strlen(in);
-        res = malloc(in_len + 1);
-        memcpy(res, in, in_len + 1);
-        return res;
-    }
+    siz = in_len + 1;
+    if(repl_len > str_len)
+        siz += count * (repl_len - str_len);
 
-    siz = (strlen(in) - strlen(str) * count + strlen(repl) * count) *
-          sizeof(char) + 1;
-
-    res = malloc(VSMAX(siz, strlen(in) * sizeof(char) + 1));
-    strcpy(res, in);
+    res = malloc(siz);
 
     outptr = res;
     inptr = in;
 
-    while((outptr = strstr(outptr, str)) && (inptr = strstr(inptr, str))) {
-        outptr[0] = '\0';
-        strcat(outptr, repl);
-        strcat(outptr, (inptr + strlen(str)));
+    while(count--) {
+        const char *match = strstr(inptr, str);
+        size_t prefix_len = match - inptr;
 
-        outptr++;
-        inptr++;
+        memcpy(outptr, inptr, prefix_len);
+        outptr += prefix_len;
+        memcpy(outptr, repl, repl_len);
+        outptr += repl_len;
+        inptr = match + str_len;
     }
+
+    strcpy(outptr, inptr);
 
     return res;
 }
@@ -228,17 +229,20 @@ static void VS_CC assFree(void *instanceData, VSCore *core, const VSAPI *vsapi)
     AssData *d = (AssData *)instanceData;
     vsapi->freeNode(d->node);
     vsapi->freeFrame(d->lastframe);
+    ass_free_track(d->ass);
     ass_renderer_done(d->ass_renderer);
     ass_library_done(d->ass_library);
-    ass_free_track(d->ass);
     free(d);
 }
 
 static int frameToTime(int frame, int64_t fpsNum, int64_t fpsDen, char *str, size_t str_size)
 {
-    int64_t timeint, time_ms;
-    time_t time_secs;
-    struct tm * ti;
+    int64_t timeint, hours, minutes, seconds, centiseconds;
+    int printed;
+
+    if(frame < 0 || fpsNum <= 0 || fpsDen <= 0)
+        return 0;
+
     if(frame != 0 && (INT64_MAX / fpsDen) < ((int64_t)frame * 100)) {
         //Overflow would occur
         return 0;
@@ -246,12 +250,17 @@ static int frameToTime(int frame, int64_t fpsNum, int64_t fpsDen, char *str, siz
     else {
         timeint = (int64_t)frame * 100 * fpsDen / fpsNum;
     }
-    time_secs = timeint / 100;
-    time_ms = timeint % 100;
-    ti = gmtime(&time_secs);
-    snprintf(str, str_size, "%d:%02d:%02d.%02" PRIu64, ti->tm_hour, ti->tm_min, ti->tm_sec, time_ms);
 
-    return 1;
+    // Not using gmtime(), which wraps around after 24 hours and can fail outright.
+    centiseconds = timeint % 100;
+    seconds = timeint / 100;
+    minutes = seconds / 60;
+    hours = minutes / 60;
+
+    printed = snprintf(str, str_size, "%" PRId64 ":%02" PRId64 ":%02" PRId64 ".%02" PRId64,
+                       hours, minutes % 60, seconds % 60, centiseconds);
+
+    return printed > 0 && (size_t)printed < str_size;
 }
 
 
@@ -270,14 +279,19 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
 
 #define ERROR_SIZE 512
     char error[ERROR_SIZE] = { 0 };
-    
+    // Only the first problem found is reported.
+#define SET_ERROR(...) do { if(!error[0]) snprintf(error, ERROR_SIZE, __VA_ARGS__); } while(0)
+
     d.ass = NULL;
     d.lastn = -1;
     d.node = vsapi->mapGetNode(in, "clip", 0, 0);
     d.vi[0] = *vsapi->getVideoInfo(d.node);
 
     if (d.vi[0].format.colorFamily == cfUndefined || !d.vi[0].width || !d.vi[0].height)
-        snprintf(error, ERROR_SIZE, "%s: clip must have known format and dimensions.", filter_name);
+        SET_ERROR("%s: clip must have known format and dimensions.", filter_name);
+
+    if (!d.vi[0].fpsNum || !d.vi[0].fpsDen)
+        SET_ERROR("%s: clip must have a known constant frame rate.", filter_name);
 
     vsapi->getVideoFormatByID(&d.vi[0].format, pfRGB24, core);
     d.vi[1] = d.vi[0];
@@ -295,20 +309,23 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
         if (err) {
             d.startframe = 0;
         }
-        else if(d.startframe > d.vi[0].numFrames) {
-            snprintf(error, ERROR_SIZE, "%s: start must be smaller than the clip length", filter_name);
+        else if(d.startframe < 0) {
+            SET_ERROR("%s: start must not be negative", filter_name);
         }
-        
-        
+        else if(d.startframe >= d.vi[0].numFrames) {
+            SET_ERROR("%s: start must be smaller than the clip length", filter_name);
+        }
+
+
         d.endframe = vsapi->mapGetIntSaturated(in, "end", 0, &err);
         if(err) {
             d.endframe = d.vi[0].numFrames;
         }
         else if(d.endframe > d.vi[0].numFrames) {
-            snprintf(error, ERROR_SIZE, "%s: end must be smaller than the clip length", filter_name);
+            SET_ERROR("%s: end must be smaller than the clip length", filter_name);
         }
         else if(!(d.startframe < d.endframe)) {
-            snprintf(error, ERROR_SIZE, "%s: end must be larger than start", filter_name);
+            SET_ERROR("%s: end must be larger than start", filter_name);
         }
     }
 
@@ -334,23 +351,30 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
         d.scale = 1;
 
     if(d.scale <= 0)
-        snprintf(error, ERROR_SIZE, "%s: scale must be greater than 0", filter_name);
+        SET_ERROR("%s: scale must be greater than 0", filter_name);
 
     d.linespacing = vsapi->mapGetFloat(in, "linespacing", 0, &err);
 
     if(d.linespacing < 0)
-        snprintf(error, ERROR_SIZE, "%s: linespacing must be positive", filter_name);
+        SET_ERROR("%s: linespacing must be positive", filter_name);
 
     d.sar = vsapi->mapGetFloat(in, "sar", 0, &err);
 
     if(d.sar < 0)
-        snprintf(error, ERROR_SIZE, "%s: sar must be positive", filter_name);
+        SET_ERROR("%s: sar must be positive", filter_name);
+
+    int num_margins = vsapi->mapNumElements(in, "margins");
+
+    if(num_margins > -1 && num_margins != 4)
+        SET_ERROR("%s: margins must have exactly 4 elements", filter_name);
 
     for(i = 0; i < 4; i++) {
         d.margins[i] = vsapi->mapGetIntSaturated(in, "margins", i, &err);
 
-        if(d.margins[i] < 0) {
-            snprintf(error, ERROR_SIZE, "%s: margins must be positive", filter_name);
+        if(err) {
+            d.margins[i] = 0;
+        } else if(d.margins[i] < 0) {
+            SET_ERROR("%s: margins must be positive", filter_name);
             break;
         }
     }

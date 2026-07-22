@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -168,6 +169,16 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
                 if (rect->w <= 0 || rect->h <= 0 || rect->type != SUBTITLE_BITMAP)
                     continue;
 
+                // Rects can stick out of the frame, either because the file is damaged or
+                // because the stream's dimensions changed after the frame size was decided.
+                int rect_x = std::max(rect->x, 0);
+                int rect_y = std::max(rect->y, 0);
+                int rect_w = std::min(rect->x + rect->w, d->vi.width) - rect_x;
+                int rect_h = std::min(rect->y + rect->h, d->vi.height) - rect_y;
+
+                if (rect_w <= 0 || rect_h <= 0)
+                    continue;
+
                 uint8_t **rect_data = rect->data;
                 int *rect_linesize = rect->linesize;
 
@@ -180,7 +191,7 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
                 if (d->gray)
                     makePaletteGray(palette);
 
-                const uint8_t *input = rect_data[0];
+                const uint8_t *input = rect_data[0] + (rect_y - rect->y) * (ptrdiff_t)rect_linesize[0] + (rect_x - rect->x);
 
                 uint8_t *dst_a = vsapi->getWritePtr(alpha, 0);
                 uint8_t *dst_r = vsapi->getWritePtr(rgb, 0);
@@ -188,13 +199,13 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
                 uint8_t *dst_b = vsapi->getWritePtr(rgb, 2);
                 ptrdiff_t stride = vsapi->getStride(rgb, 0);
 
-                dst_a += rect->y * stride + rect->x;
-                dst_r += rect->y * stride + rect->x;
-                dst_g += rect->y * stride + rect->x;
-                dst_b += rect->y * stride + rect->x;
+                dst_a += rect_y * stride + rect_x;
+                dst_r += rect_y * stride + rect_x;
+                dst_g += rect_y * stride + rect_x;
+                dst_b += rect_y * stride + rect_x;
 
-                for (int y = 0; y < rect->h; y++) {
-                    for (int x = 0; x < rect->w; x++) {
+                for (int y = 0; y < rect_h; y++) {
+                    for (int x = 0; x < rect_w; x++) {
                         uint32_t argb = palette[input[x]];
 
                         dst_a[x] = (argb >> 24) & 0xff;
@@ -299,6 +310,22 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
     d.clip = vsapi->mapGetNode(in, "clip", 0, nullptr);
     d.vi = *vsapi->getVideoInfo(d.clip);
 
+    if (!vsh::isConstantVideoFormat(&d.vi)) {
+        vsapi->mapSetError(out, (d.filter_name + ": clip must have known format and dimensions.").c_str());
+
+        vsapi->freeNode(d.clip);
+
+        return;
+    }
+
+    if (!d.vi.fpsNum || !d.vi.fpsDen) {
+        vsapi->mapSetError(out, (d.filter_name + ": clip must have a known constant frame rate.").c_str());
+
+        vsapi->freeNode(d.clip);
+
+        return;
+    }
+
     const char *file = vsapi->mapGetData(in, "file", 0, nullptr);
 
     int id = vsapi->mapGetIntSaturated(in, "id", 0, &err);
@@ -356,7 +383,7 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
         if (!av_strerror(ret, av_error, AV_ERROR_MAX_STRING_SIZE))
             error = av_error;
         else
-            error = strerror(err);
+            error = "unknown error " + std::to_string(ret);
 
         vsapi->mapSetError(out, (d.filter_name + ": " + e + error).c_str());
 
@@ -457,6 +484,18 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
     d.vi.width = fctx->streams[stream_index]->codecpar->width;
     d.vi.height = fctx->streams[stream_index]->codecpar->height;
 
+    if (d.vi.width <= 0 || d.vi.height <= 0) {
+        vsapi->mapSetError(out, (d.filter_name + ": failed to determine the dimensions of the selected stream.").c_str());
+
+        avformat_close_input(&fctx);
+
+        avcodec_free_context(&d.avctx);
+
+        vsapi->freeNode(d.clip);
+
+        return;
+    }
+
     Subtitle current_subtitle = { };
 
     AVPacket *packet = av_packet_alloc();
@@ -518,6 +557,12 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
 
     av_packet_free(&packet);
 
+    // Packets that never turned into a subtitle picture.
+    for (auto p : current_subtitle.packets)
+        av_packet_free(&p);
+
+    current_subtitle.packets.clear();
+
     if (d.subtitles.size() == 0) {
         vsapi->mapSetError(out, (d.filter_name + ": no usable subtitle pictures found.").c_str());
 
@@ -573,6 +618,8 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
     vsapi->createVideoFilter(out, d.filter_name.c_str(), &d.vi, imageFileGetFrame, imageFileFree, fmUnordered, nullptr, 0, data, core);
 
     if (vsapi->mapGetError(out)) {
+        imageFileFree(data, core, vsapi);
+
         avformat_close_input(&fctx);
 
         return;
@@ -604,7 +651,6 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
             return;
         }
 
-        VSNode *alpha = vsapi->mapGetNode(vsret, "clip", 0, NULL);
         vsapi->freeMap(vsret);
 
 #define ERROR_SIZE 512
@@ -614,7 +660,6 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
 #undef ERROR_SIZE
 
         vsapi->freeNode(subs);
-        vsapi->freeNode(alpha);
 
         if (vsapi->mapGetError(out)) {
             avformat_close_input(&fctx);

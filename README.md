@@ -17,7 +17,8 @@ Subtext is a subtitle renderer that uses libass and ffmpeg.
 
    Parameters:
       clip
-         Input clip.
+         Input clip. It must have a constant format, constant
+         dimensions, and a constant frame rate.
 
       file
          Subtitle file to be rendered.
@@ -102,6 +103,9 @@ Subtext is a subtitle renderer that uses libass and ffmpeg.
          If *blend* is True, the subtitles will be burned into this
          clip, Otherwise, only the frame rate and number of frames
          will be obtained from this clip.
+
+         It must have a constant format, constant dimensions, and a
+         constant frame rate, even when *blend* is False.
 
       *file*
          Name of the subtitle file. For VOBSUB, it must the name of the
