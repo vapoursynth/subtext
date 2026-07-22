@@ -260,7 +260,15 @@ static int frameToTime(int frame, int64_t fpsNum, int64_t fpsDen, char *str, siz
     printed = snprintf(str, str_size, "%" PRId64 ":%02" PRId64 ":%02" PRId64 ".%02" PRId64,
                        hours, minutes % 60, seconds % 60, centiseconds);
 
-    return printed > 0 && (size_t)printed < str_size;
+    if(printed < 0 || (size_t)printed >= str_size) {
+        // Leave nothing behind, the caller tells the times apart by their contents.
+        if(str_size)
+            str[0] = '\0';
+
+        return 0;
+    }
+
+    return 1;
 }
 
 
@@ -523,6 +531,11 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
     VSFilterDependency deps[] = {{ d.node, rpStrictSpatial }};
     vsapi->createVideoFilter(out, filter_name, d.vi, assGetFrame, assFree,
                         fmUnordered, deps, 1, data, core);
+
+    if (vsapi->mapGetError(out)) {
+        assFree(data, core, vsapi);
+        return;
+    }
 
     int blend = !!vsapi->mapGetInt(in, "blend", 0, &err);
     if (err)

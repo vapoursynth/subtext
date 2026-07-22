@@ -41,6 +41,9 @@ int64_t MemoryFile::seek(void *opaque, int64_t offset, int whence) {
         return -1;
     }
 
+    if (offset < 0)
+        return AVERROR(EINVAL);
+
     mf->current_position = offset;
     return mf->current_position;
 }
@@ -68,6 +71,9 @@ struct AVIOHolder {
 
 int MemoryFile::readPacket(void *opaque, uint8_t *buf, int bytes_to_read) {
     MemoryFile *mf = (MemoryFile *)opaque;
+
+    if (mf->current_position >= mf->total_size)
+        return AVERROR_EOF;
 
     int bytes_read = static_cast<int>(std::min<int64_t>(bytes_to_read, mf->total_size - mf->current_position));
 

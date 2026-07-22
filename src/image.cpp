@@ -138,6 +138,8 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
                 if (got_subtitle && i < sub.packets.size() - 1) {
                     vsapi->setFilterError((d->filter_name + ": Got subtitle sooner than expected.").c_str(), frameCtx);
 
+                    avsubtitle_free(&avsub);
+
                     vsapi->freeFrame(rgb);
                     vsapi->freeFrame(alpha);
 
@@ -156,6 +158,8 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
 
             if (avsub.num_rects == 0) {
                 vsapi->setFilterError((d->filter_name + ": Got subtitle with num_rects=0.").c_str(), frameCtx);
+
+                avsubtitle_free(&avsub);
 
                 vsapi->freeFrame(rgb);
                 vsapi->freeFrame(alpha);
