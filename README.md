@@ -3,7 +3,7 @@ Subtext
 
 Subtext is a subtitle renderer that uses libass and ffmpeg.
 
-.. function::   TextFile(clip clip, string file[, string charset="UTF-8", float scale=1, int debuglevel=0, string fontdir="", float linespacing=0, int[] margins=[0, 0, 0, 0], float sar=0, string style="", bint blend=True, int matrix, string matrix_s, int transfer, string transfer_s, int primaries, string primaries_s, int range])
+.. function::   TextFile(clip clip, string file[, string charset="UTF-8", float scale=1, int debuglevel=0, string fontdir="", float linespacing=0, int[] margins=[0, 0, 0, 0], float sar=0, string style="", bint blend=True, int matrix, string matrix_s, int transfer, string transfer_s, int primaries, string primaries_s])
    :module: sub
 
    TextFile renders text subtitles. Supported formats include ASS,
@@ -67,14 +67,40 @@ Subtext is a subtitle renderer that uses libass and ffmpeg.
       primaries
 
       primaries_s
+         Overrides for the colorimetry of *clip*. Only used when
+         blend=True, and only needed when *clip* is tagged wrongly or
+         not at all.
 
-      range
-         If blend=True, these will be passed to resize.Bicubic when
-         converting the RGB24 subtitles to YUV. The default matrix is
-         "709".
+         By default the subtitles are converted to match *clip*, frame
+         by frame, following its ``_Matrix``, ``_Transfer``,
+         ``_Primaries``, ``_ColorRange`` and ``_ChromaLocation`` frame
+         properties. The subtitles are treated as BT.709 to start with,
+         so a frame tagged as, say, PQ and BT.2020 gets subtitles
+         converted into that colour space instead of blended in as if
+         they were already in it. A frame that says nothing usable is
+         handled the way it always was: the BT.709 matrix and no colour
+         space conversion. The colour range is always taken from *clip*
+         and can't be overridden, because the two can only be blended
+         when they agree on it.
+
+         These are worth reaching for in two cases:
+
+         Untagged clips. Nothing can be adapted to, so the subtitles
+         fall back to BT.709. Standard definition material is the usual
+         victim, and ``matrix_s="470bg"`` is the usual answer.
+         Tagging the clip with std.SetFrameProps instead is generally
+         better, since that fixes everything downstream and not just
+         the subtitles.
+
+         Turning the colour space conversion off. Passing
+         ``transfer=1, primaries=1`` converts the subtitles from BT.709
+         to BT.709, which does nothing, so they end up blended in
+         unconverted the way they were before this was done per frame.
+         Both are needed, since either one on its own still leaves the
+         other being adapted to.
 
 
-.. function::   Subtitle(clip clip, string text[, int start=0, int end=clip.numFrames, int debuglevel=0, string fontdir="", float linespacing=0, int[] margins=[0, 0, 0, 0], float sar=0, string style="sans-serif,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,7,10,10,10,1", bint blend=True, int matrix, string matrix_s, int transfer, string transfer_s, int primaries, string primaries_s, int range])
+.. function::   Subtitle(clip clip, string text[, int start=0, int end=clip.numFrames, int debuglevel=0, string fontdir="", float linespacing=0, int[] margins=[0, 0, 0, 0], float sar=0, string style="sans-serif,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,7,10,10,10,1", bint blend=True, int matrix, string matrix_s, int transfer, string transfer_s, int primaries, string primaries_s])
    :module: sub
 
    Instead of rendering a subtitle file, Subtitle renders the string *text*.
@@ -93,7 +119,7 @@ Subtext is a subtitle renderer that uses libass and ffmpeg.
    The other parameters have the same meanings as with TextFile.
 
 
-.. function::   ImageFile(clip clip, string file[, int id=-1, int[] palette, bint gray=False, bint info=False, bint flatten=False, bint blend=True, int matrix, string matrix_s, int transfer, string transfer_s, int primaries, string primaries_s, int range])
+.. function::   ImageFile(clip clip, string file[, int id=-1, int[] palette, bint gray=False, bint info=False, bint flatten=False, bint blend=True, int matrix, string matrix_s, int transfer, string transfer_s, int primaries, string primaries_s])
    :module: sub
 
    ImageFile renders image-based subtitles such as VOBSUB and PGS.

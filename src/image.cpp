@@ -1,8 +1,8 @@
-#include <climits>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 #include <algorithm>
+#include <climits>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -12,6 +12,7 @@ extern "C" {
 }
 
 #include <VapourSynth4.h>
+#include <VSConstants4.h>
 #include <VSHelper4.h>
 
 #include "common.h"
@@ -303,7 +304,7 @@ static void printTimestamp(int64_t pts, const AVRational &time_base, bool end) {
 */
 
 
-extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
+void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
     (void)userData;
 
     ImageFileData d = { };
@@ -624,7 +625,7 @@ extern "C" void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userDat
     VSVideoFormat blank_alpha_format;
     vsapi->getVideoFormatByID(&blank_alpha_format, pfGray8, core);
     d.blank_alpha = vsapi->newVideoFrame(&blank_alpha_format, d.vi.width, d.vi.height, nullptr, core);
-    vsapi->mapSetInt(vsapi->getFramePropertiesRW(d.blank_alpha), "_ColorRange", 0, maReplace);
+    vsapi->mapSetInt(vsapi->getFramePropertiesRW(d.blank_alpha), "_Range", VSC_RANGE_FULL, maReplace);
 
     for (int i = 0; i < 4; i++) {
         uint8_t *ptr = vsapi->getWritePtr(i < 3 ? d.blank_rgb : d.blank_alpha, i % 3);

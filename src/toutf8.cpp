@@ -1,32 +1,22 @@
-#ifdef _MSC_VER
-#undef fseeko
-#undef ftello
-#define fseeko _fseeki64
-#define ftello _ftelli64
-#else
-// To shut up the "implicit declaration of fseeko" warning.
-#define _POSIX_C_SOURCE 200112L
-#endif
-
-#include <errno.h>
-#include <inttypes.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cerrno>
+#include <cinttypes>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <system_error>
 
 #include <iconv.h>
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 
 
 // Function stolen from libass.
 static char *sub_recode(char *data, size_t *size, const char *codepage, char *error, size_t error_size) {
     iconv_t icdsc;
-    char *tocp = "UTF-8";
+    const char *tocp = "UTF-8";
     char *outbuf;
 
     if ((icdsc = iconv_open(tocp, codepage)) == (iconv_t) (-1)) {
@@ -48,7 +38,7 @@ static char *sub_recode(char *data, size_t *size, const char *codepage, char *er
         size_t rc;
         int clear = 0;
 
-        outbuf = malloc(osize);
+        outbuf = (char *)malloc(osize);
         if (!outbuf) {
             snprintf(error, error_size, "failed to allocate %zu bytes for iconv.", osize);
 
@@ -68,7 +58,7 @@ static char *sub_recode(char *data, size_t *size, const char *codepage, char *er
             if (rc == (size_t) (-1)) {
                 if (errno == E2BIG) {
                     size_t offset = op - outbuf;
-                    char *nbuf = realloc(outbuf, osize + grow);
+                    char *nbuf = (char *)realloc(outbuf, osize + grow);
                     if (!nbuf) {
                         free(outbuf);
                         outbuf = NULL;
@@ -121,95 +111,62 @@ static int isUtf8(const char *charset) {
 
 
 char *convertToUtf8(const char *file_name, const char *charset, int64_t *file_size, char *error, size_t error_size) {
-#ifdef _WIN32
-    int required_size = MultiByteToWideChar(CP_UTF8, 0, file_name, -1, NULL, 0);
-    if (required_size <= 0) {
-        snprintf(error, error_size, "file name conversion for _wfopen failed.");
+    /* The name is UTF-8, which is not what a path is built from by default. */
+    std::filesystem::path path = std::filesystem::u8path(file_name);
 
-        return NULL;
-    }
-    wchar_t *wbuffer = malloc(required_size * sizeof(wchar_t));
-    if (!wbuffer) {
-        snprintf(error, error_size, "failed to allocate %zu bytes for file name conversion for _wfopen.", required_size * sizeof(wchar_t));
+    std::error_code ec;
+    uintmax_t size = std::filesystem::file_size(path, ec);
+    if (ec) {
+        snprintf(error, error_size, "failed to obtain the size of the subtitle file: %s.", ec.message().c_str());
 
-        return NULL;
-    }
-    if (MultiByteToWideChar(CP_UTF8, 0, file_name, -1, wbuffer, required_size) != required_size) {
-        free(wbuffer);
-
-        snprintf(error, error_size, "file name conversion for _wfopen failed.");
-
-        return NULL;
-    }
-    FILE *f = _wfopen(wbuffer, L"rb");
-    free(wbuffer);
-#else
-    FILE *f = fopen(file_name, "rb");
-#endif
-
-    if (!f) {
-        snprintf(error, error_size, "failed to open subtitle file: %s.", strerror(errno));
-
-        return NULL;
+        return nullptr;
     }
 
-    if (fseeko(f, 0, SEEK_END)) {
-        snprintf(error, error_size, "failed to seek to the end of the subtitle file: %s.", strerror(errno));
+    /* The whole file has to fit in memory and in a single read. */
+    if (size > static_cast<uintmax_t>(SIZE_MAX) ||
+        size > static_cast<uintmax_t>(std::numeric_limits<std::streamsize>::max())) {
+        snprintf(error, error_size, "the subtitle file is too large.");
 
-        fclose(f);
-
-        return NULL;
+        return nullptr;
     }
 
-    *file_size = ftello(f);
-    if (*file_size == -1) {
-        snprintf(error, error_size, "failed to obtain the size of the subtitle file: %s.", strerror(errno));
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        snprintf(error, error_size, "failed to open subtitle file.");
 
-        fclose(f);
-
-        return NULL;
+        return nullptr;
     }
 
-    if (fseeko(f, 0, SEEK_SET)) {
-        snprintf(error, error_size, "failed to seek back to the beginning of the subtitle file: %s.", strerror(errno));
+    *file_size = static_cast<int64_t>(size);
 
-        fclose(f);
-
-        return NULL;
-    }
-
-
-    char *contents = malloc(*file_size);
+    /* Zero sized allocations are allowed to return nothing at all. */
+    char *contents = (char *)malloc(size ? static_cast<size_t>(size) : 1);
     if (!contents) {
-        snprintf(error, error_size, "failed to allocate %" PRId64 " bytes for the contents of the subtitle file.", *file_size);
+        snprintf(error, error_size, "failed to allocate %" PRIuMAX " bytes for the contents of the subtitle file.", size);
 
-        fclose(f);
-
-        return NULL;
+        return nullptr;
     }
 
-    size_t bytes_read = fread(contents, 1, *file_size, f);
-    if (bytes_read != (size_t)*file_size) {
-        snprintf(error, error_size, "expected to read %" PRId64 " bytes, but read only %zu bytes.", *file_size, bytes_read);
+    /* Short reads leave the stream in a failed state, so the amount that was
+       read doesn't have to be compared against the size again. */
+    file.read(contents, static_cast<std::streamsize>(size));
+    if (!file) {
+        snprintf(error, error_size, "failed to read the contents of the subtitle file.");
 
-        fclose(f);
         free(contents);
 
-        return NULL;
+        return nullptr;
     }
-
-    fclose(f);
-    f = NULL;
 
 
     if (charset && !isUtf8(charset)) {
-        size_t size = (size_t)*file_size;
-        char *utf8_contents = sub_recode(contents, &size, charset, error, error_size);
+        size_t recoded_size = static_cast<size_t>(size);
+        char *utf8_contents = sub_recode(contents, &recoded_size, charset, error, error_size);
         free(contents);
         contents = utf8_contents;
 
         if (contents)
-            *file_size = size;
+            *file_size = static_cast<int64_t>(recoded_size);
     }
 
     return contents;

@@ -1,12 +1,14 @@
-project('SubText', 'c', 'cpp',
+project('SubText', 'cpp',
     default_options: [
-        'buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'c_std=c11', 'cpp_std=c++17',
+        'buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'cpp_std=c++17',
     ],
     license: 'MIT',
     license_files: 'LICENSE',
     meson_version: '>=1.2.3',
     version: '7.0',
 )
+
+add_project_arguments('-DVS_USE_API_42', language: 'cpp')
 
 deps = [
     dependency('libass', version: '>=0.17.0'),
@@ -29,7 +31,7 @@ if meson.get_compiler('cpp').get_linker_id() in ['ld.bfd', 'ld.gold', 'ld.mold']
 endif
 
 shared_module('subtext',
-    files('src/common.c', 'src/image.cpp', 'src/text.c', 'src/toass.cpp', 'src/toutf8.c'),
+    files('src/common.cpp', 'src/image.cpp', 'src/text.cpp', 'src/toass.cpp', 'src/toutf8.cpp'),
     dependencies: deps,
     gnu_symbol_visibility: 'hidden',
     include_directories: incdir,

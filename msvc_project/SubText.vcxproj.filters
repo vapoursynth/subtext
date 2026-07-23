@@ -20,19 +20,19 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\src\common.c">
+    <ClCompile Include="..\src\common.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\src\image.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\text.c">
+    <ClCompile Include="..\src\text.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\src\toass.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\toutf8.c">
+    <ClCompile Include="..\src\toutf8.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

@@ -16,12 +16,17 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <string.h>
+#include <cinttypes>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+
 #include <ass/ass.h>
-#include <time.h>
-#include <inttypes.h>
 
 #include <VapourSynth4.h>
+#include <VSConstants4.h>
 #include <VSHelper4.h>
 
 #include "common.h"
@@ -93,7 +98,7 @@ static char *strrepl(const char *in, const char *str, const char *repl)
     if(repl_len > str_len)
         siz += count * (repl_len - str_len);
 
-    res = malloc(siz);
+    res = (char *)malloc(siz);
 
     outptr = res;
     inptr = in;
@@ -212,7 +217,7 @@ static const VSFrame *VS_CC assGetFrame(int n, int activationReason,
                                                  NULL, core);
 
             assRender(dst, a, vsapi, img);
-            vsapi->mapSetInt(vsapi->getFramePropertiesRW(a), "_ColorRange", 0, maReplace);
+            vsapi->mapSetInt(vsapi->getFramePropertiesRW(a), "_Range", VSC_RANGE_FULL, maReplace);
             vsapi->mapConsumeFrame(vsapi->getFramePropertiesRW(dst), "_Alpha", a, maAppend);
             vsapi->freeFrame(d->lastframe);
             d->lastframe = dst;
@@ -232,7 +237,7 @@ static void VS_CC assFree(void *instanceData, VSCore *core, const VSAPI *vsapi)
     ass_free_track(d->ass);
     ass_renderer_done(d->ass_renderer);
     ass_library_done(d->ass_library);
-    free(d);
+    delete d;
 }
 
 static int frameToTime(int frame, int64_t fpsNum, int64_t fpsDen, char *str, size_t str_size)
@@ -478,7 +483,7 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
         siz = (strlen(fmt) + strlen(x) + strlen(y) + strlen(d.style) +
                strlen(start) + strlen(end) + strlen(text)) * sizeof(char);
 
-        str = malloc(siz);
+        str = (char *)malloc(siz);
         snprintf(str, siz, fmt, x, y, d.style, start, end, text);
 
         free(text);
@@ -525,14 +530,13 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
         memset(vsapi->getWritePtr(frame, plane), 0, vsapi->getStride(frame, plane) * vsapi->getFrameHeight(frame, plane));
     memset(vsapi->getWritePtr(alpha, 0), 0, vsapi->getStride(alpha, 0) *vsapi->getFrameHeight(alpha, 0));
 
-    vsapi->mapSetInt(vsapi->getFramePropertiesRW(alpha), "_ColorRange", 0, maAppend);
+    vsapi->mapSetInt(vsapi->getFramePropertiesRW(alpha), "_Range", VSC_RANGE_FULL, maAppend);
 
     vsapi->mapConsumeFrame(vsapi->getFramePropertiesRW(frame), "_Alpha", alpha, maAppend);
 
     d.lastframe = frame;
 
-    data = malloc(sizeof(d));
-    *data = d;
+    data = new AssData(d);
 
     VSFilterDependency deps[] = {{ d.node, rpStrictSpatial }};
     vsapi->createVideoFilter(out, filter_name, d.vi, assGetFrame, assFree,
@@ -581,8 +585,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI
     "transfer:int:opt;" \
     "transfer_s:data:opt;" \
     "primaries:int:opt;" \
-    "primaries_s:data:opt;" \
-    "range:int:opt;"
+    "primaries_s:data:opt;"
 
     vspapi->registerFunction("TextFile",
                  "clip:vnode;"

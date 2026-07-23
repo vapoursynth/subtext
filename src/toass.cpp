@@ -1,6 +1,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include <iconv.h>
@@ -86,7 +87,7 @@ int MemoryFile::readPacket(void *opaque, uint8_t *buf, int bytes_to_read) {
 }
 
 
-extern "C" ASS_Track *convertToASS(const char *file_name, const char *contents, size_t contents_size, ASS_Library *ass_library, const char *user_style, const char *charset, char *error, size_t error_size) {
+ASS_Track *convertToASS(const char *file_name, const char *contents, size_t contents_size, ASS_Library *ass_library, const char *user_style, const char *charset, char *error, size_t error_size) {
     av_log_set_level(AV_LOG_PANIC); /// would be good to have a parameter for this
 
     MemoryFile memory_file = { };
