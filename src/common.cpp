@@ -321,7 +321,7 @@ static void VS_CC matchColorimetryFree(void *instanceData, VSCore *core, const V
    range, chroma location, matrix, transfer function and primaries of each
    individual clip frame. The reference to subs is consumed. Returns NULL and
    fills in error on failure. */
-static VSNode *matchColorimetry(VSNode *clip, VSNode *subs, const VSMap *in, int unsuitable_format, int unsuitable_dimensions, const char *filter_name, char *error, size_t error_size, VSCore *core, const VSAPI *vsapi) {
+static VSNode *matchColorimetry(VSNode *clip, VSNode *subs, const VSMap *in, int unsuitable_format, int unsuitable_dimensions, std::string &error, VSCore *core, const VSAPI *vsapi) {
     const VSVideoInfo *clip_vi = vsapi->getVideoInfo(clip);
     int err;
 
@@ -409,7 +409,7 @@ static VSNode *matchColorimetry(VSNode *clip, VSNode *subs, const VSMap *in, int
     VSNode *node = vsapi->createVideoFilter2("MatchColorimetry", vsapi->getVideoInfo(clip), matchColorimetryGetFrame, matchColorimetryFree, fmParallelRequests, deps, 1, d, core);
 
     if (!node) {
-        snprintf(error, error_size, "%s: failed to create the colorimetry matching filter.", filter_name);
+        error = "failed to create the colorimetry matching filter.";
         matchColorimetryFree(d, core, vsapi);
 
         return nullptr;
@@ -419,7 +419,11 @@ static VSNode *matchColorimetry(VSNode *clip, VSNode *subs, const VSMap *in, int
 }
 
 
-void blendSubtitles(VSNode *clip, VSNode *subs, const VSMap *in, VSMap *out, const char *filter_name, char *error, size_t error_size, VSCore *core, const VSAPI *vsapi) {
+void blendSubtitles(VSNode *clip, VSNode *subs, const VSMap *in, VSMap *out, const std::string &filter_name, VSCore *core, const VSAPI *vsapi) {
+    std::string error;
+    auto fail = [&](const std::string &message) {
+        vsapi->mapSetError(out, (filter_name + ": " + message).c_str());
+    };
     VSPlugin *std_plugin = vsapi->getPluginByID(VSH_STD_PLUGIN_ID, core);
     VSPlugin *resize_plugin = vsapi->getPluginByID(VSH_RESIZE_PLUGIN_ID, core);
 
@@ -440,8 +444,7 @@ void blendSubtitles(VSNode *clip, VSNode *subs, const VSMap *in, VSMap *out, con
     ret = vsapi->invoke(std_plugin, "PreMultiply", args);
     vsapi->freeMap(args);
     if (vsapi->mapGetError(ret)) {
-        snprintf(error, error_size, "%s: %s", filter_name, vsapi->mapGetError(ret));
-        vsapi->mapSetError(out, error);
+        fail(vsapi->mapGetError(ret));
         vsapi->freeMap(ret);
         vsapi->freeNode(alpha);
         return;
@@ -459,9 +462,9 @@ void blendSubtitles(VSNode *clip, VSNode *subs, const VSMap *in, VSMap *out, con
             clip_vi->width != subs_vi->width ||
             clip_vi->height != subs_vi->height;
 
-    subs = matchColorimetry(clip, subs, in, unsuitable_format, unsuitable_dimensions, filter_name, error, error_size, core, vsapi);
+    subs = matchColorimetry(clip, subs, in, unsuitable_format, unsuitable_dimensions, error, core, vsapi);
     if (!subs) {
-        vsapi->mapSetError(out, error);
+        fail(error);
         vsapi->freeNode(alpha);
         return;
     }
@@ -483,20 +486,12 @@ void blendSubtitles(VSNode *clip, VSNode *subs, const VSMap *in, VSMap *out, con
                                                                  alpha_vi->format.subSamplingH,
                                                                  core);
             if (!alpha_format) {
-                snprintf(error, error_size,
-                         "%s: Failed to register format with "
-                         "color family %d, "
-                         "sample type %d, "
-                         "bit depth %d, "
-                         "horizontal subsampling %d, "
-                         "vertical subsampling %d.",
-                         filter_name,
-                         alpha_vi->format.colorFamily,
-                         clip_vi->format.sampleType,
-                         clip_vi->format.bitsPerSample,
-                         alpha_vi->format.subSamplingW,
-                         alpha_vi->format.subSamplingH);
-                vsapi->mapSetError(out, error);
+                fail("Failed to register format with "
+                     "color family " + std::to_string(alpha_vi->format.colorFamily) + ", "
+                     "sample type " + std::to_string(clip_vi->format.sampleType) + ", "
+                     "bit depth " + std::to_string(clip_vi->format.bitsPerSample) + ", "
+                     "horizontal subsampling " + std::to_string(alpha_vi->format.subSamplingW) + ", "
+                     "vertical subsampling " + std::to_string(alpha_vi->format.subSamplingH) + ".");
                 vsapi->freeNode(subs);
                 vsapi->freeMap(args);
                 return;
@@ -513,8 +508,7 @@ void blendSubtitles(VSNode *clip, VSNode *subs, const VSMap *in, VSMap *out, con
         ret = vsapi->invoke(resize_plugin, "Bicubic", args);
         vsapi->freeMap(args);
         if (vsapi->mapGetError(ret)) {
-            snprintf(error, error_size, "%s: %s", filter_name, vsapi->mapGetError(ret));
-            vsapi->mapSetError(out, error);
+            fail(vsapi->mapGetError(ret));
             vsapi->freeMap(ret);
             vsapi->freeNode(subs);
             return;
@@ -533,8 +527,7 @@ void blendSubtitles(VSNode *clip, VSNode *subs, const VSMap *in, VSMap *out, con
     ret = vsapi->invoke(std_plugin, "MaskedMerge", args);
     vsapi->freeMap(args);
     if (vsapi->mapGetError(ret)) {
-        snprintf(error, error_size, "%s: %s", filter_name, vsapi->mapGetError(ret));
-        vsapi->mapSetError(out, error);
+        fail(vsapi->mapGetError(ret));
         vsapi->freeMap(ret);
         return;
     }

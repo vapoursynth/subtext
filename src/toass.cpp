@@ -2,14 +2,15 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 
 #include <iconv.h>
-#include <ass/ass.h>
+
+#include "common.h"
+#include "ffmpeg.h"
 
 extern "C" {
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
 #include <libavutil/mathematics.h>
 }
 
@@ -51,6 +52,7 @@ int64_t MemoryFile::seek(void *opaque, int64_t offset, int whence) {
 }
 
 
+
 // A custom AVIOContext is never freed by avformat_close_input() or by
 // avformat_open_input()'s failure path, so it has to be taken care of by hand.
 struct AVIOHolder {
@@ -87,18 +89,18 @@ int MemoryFile::readPacket(void *opaque, uint8_t *buf, int bytes_to_read) {
 }
 
 
-ASS_Track *convertToASS(const char *file_name, const char *contents, size_t contents_size, ASS_Library *ass_library, const char *user_style, const char *charset, char *error, size_t error_size) {
+ASS_Track *convertToASS(const std::string &file_name, const std::string &contents, ASS_Library *ass_library, const char *user_style, const std::string &charset, std::string &error) {
     av_log_set_level(AV_LOG_PANIC); /// would be good to have a parameter for this
 
     MemoryFile memory_file = { };
-    memory_file.data = contents;
-    memory_file.total_size = contents_size;
+    memory_file.data = contents.data();
+    memory_file.total_size = contents.size();
 
-    AVFormatContext *fctx = nullptr;
+    AVFormatContextPtr fctx;
     AVIOHolder avio;
 
     try {
-        fctx = avformat_alloc_context();
+        fctx.reset(avformat_alloc_context());
         if (!fctx)
             throw std::string("failed to allocate AVFormatContext.");
 
@@ -113,11 +115,11 @@ ASS_Track *convertToASS(const char *file_name, const char *contents, size_t cont
             throw std::string("failed to allocate AVIOContext.");
 
         fctx->pb = avio.ctx;
+        // Says that the AVIOContext belongs to us, which is what keeps closing
+        // the AVFormatContext from touching it.
+        fctx->flags |= AVFMT_FLAG_CUSTOM_IO;
     } catch (const std::string &e) {
-        snprintf(error, error_size, "%s", e.c_str());
-
-        if (fctx)
-            avformat_free_context(fctx);
+        error = e;
 
         return nullptr;
     }
@@ -125,31 +127,21 @@ ASS_Track *convertToASS(const char *file_name, const char *contents, size_t cont
     int ret = 0;
 
     try {
-        ret = avformat_open_input(&fctx, file_name, nullptr, nullptr);
+        ret = openInput(fctx, file_name.c_str());
         if (ret < 0)
             throw std::string("avformat_open_input failed: ");
 
-        ret = avformat_find_stream_info(fctx, nullptr);
+        ret = avformat_find_stream_info(fctx.get(), nullptr);
         if (ret < 0)
             throw std::string("avformat_find_stream_info failed: ");
     } catch (const std::string &e) {
-        char av_error[AV_ERROR_MAX_STRING_SIZE] = { 0 };
-
-        // ret is an AVERROR, which strerror() knows nothing about.
-        if (av_strerror(ret, av_error, AV_ERROR_MAX_STRING_SIZE))
-            snprintf(av_error, AV_ERROR_MAX_STRING_SIZE, "unknown error %d", ret);
-
-        snprintf(error, error_size, "%s%s.", e.c_str(), av_error);
-
-        avformat_close_input(&fctx);
+        error = e + avErrorString(ret) + ".";
 
         return nullptr;
     }
 
     if (fctx->nb_streams == 0) {
-        snprintf(error, error_size, "no streams found.");
-
-        avformat_close_input(&fctx);
+        error = "no streams found.";
 
         return nullptr;
     }
@@ -158,7 +150,7 @@ ASS_Track *convertToASS(const char *file_name, const char *contents, size_t cont
 
     enum AVCodecID codec_id = fctx->streams[stream_index]->codecpar->codec_id;
 
-    AVCodecContext *avctx = nullptr;
+    AVCodecContextPtr avctx;
 
     ret = 0;
 
@@ -174,7 +166,7 @@ ASS_Track *convertToASS(const char *file_name, const char *contents, size_t cont
         if (!decoder)
             throw std::string("failed to find decoder for '") + avcodec_get_name(codec_id) + "'.";
 
-        avctx = avcodec_alloc_context3(decoder);
+        avctx.reset(avcodec_alloc_context3(decoder));
         if (!avctx)
             throw std::string("failed to allocate AVCodecContext.");
 
@@ -188,19 +180,14 @@ ASS_Track *convertToASS(const char *file_name, const char *contents, size_t cont
             memcpy(avctx->extradata, fctx->streams[stream_index]->codecpar->extradata, extradata_size);
         }
 
-        ret = avcodec_open2(avctx, decoder, NULL);
+        ret = avcodec_open2(avctx.get(), decoder, NULL);
         if (ret < 0)
             throw std::string("failed to open AVCodecContext.");
 
         if (!avctx->subtitle_header_size)
             throw std::string("no subtitle header found in AVCodecContext.");
     } catch (const std::string &e) {
-        if (avctx)
-            avcodec_free_context(&avctx);
-
-        avformat_close_input(&fctx);
-
-        snprintf(error, error_size, "%s", e.c_str());
+        error = e;
 
         return nullptr;
     }
@@ -220,10 +207,7 @@ ASS_Track *convertToASS(const char *file_name, const char *contents, size_t cont
         size_t style_position = subtitle_header.find("Style:");
 
         if (style_position == std::string::npos) {
-            snprintf(error, error_size, "subtitle header in AVCodecContext has no styles.");
-
-            avcodec_free_context(&avctx);
-            avformat_close_input(&fctx);
+            error = "subtitle header in AVCodecContext has no styles.";
 
             return nullptr;
         }
@@ -231,10 +215,7 @@ ASS_Track *convertToASS(const char *file_name, const char *contents, size_t cont
         size_t events_position = subtitle_header.find("[Events]");
 
         if (events_position == std::string::npos) {
-            snprintf(error, error_size, "subtitle header in AVCodecContext has no [Events] section.");
-
-            avcodec_free_context(&avctx);
-            avformat_close_input(&fctx);
+            error = "subtitle header in AVCodecContext has no [Events] section.";
 
             return nullptr;
         }
@@ -251,9 +232,9 @@ ASS_Track *convertToASS(const char *file_name, const char *contents, size_t cont
     }
 
 
-    AVPacket *packet = av_packet_alloc();
+    AVPacketPtr packet(av_packet_alloc());
 
-    ASS_Track *track = ass_read_memory(ass_library, (char *)ass_file.c_str(), ass_file.size(), nullptr);
+    AssTrackPtr track(ass_read_memory(ass_library, ass_file.data(), ass_file.size(), nullptr));
 
     AVSubtitle avsub;
 
@@ -261,9 +242,9 @@ ASS_Track *convertToASS(const char *file_name, const char *contents, size_t cont
     int failed_decoding = 0;
     int read_ret;
 
-    while ((read_ret = av_read_frame(fctx, packet)) == 0) {
+    while ((read_ret = av_read_frame(fctx.get(), packet.get())) == 0) {
         if (packet->stream_index != stream_index) {
-            av_packet_unref(packet);
+            av_packet_unref(packet.get());
             continue;
         }
 
@@ -271,16 +252,16 @@ ASS_Track *convertToASS(const char *file_name, const char *contents, size_t cont
 
         // An event that can't be placed in time is useless.
         if (packet->pts == AV_NOPTS_VALUE) {
-            av_packet_unref(packet);
+            av_packet_unref(packet.get());
             failed_decoding++;
             continue;
         }
 
         int got_avsub = 0;
 
-        ret = avcodec_decode_subtitle2(avctx, &avsub, &got_avsub, packet);
+        ret = avcodec_decode_subtitle2(avctx.get(), &avsub, &got_avsub, packet.get());
         if (ret < 0 || !got_avsub) {
-            av_packet_unref(packet);
+            av_packet_unref(packet.get());
             failed_decoding++;
             continue;
         }
@@ -294,33 +275,24 @@ ASS_Track *convertToASS(const char *file_name, const char *contents, size_t cont
             if (rect->type != SUBTITLE_ASS || !rect->ass || !rect->ass[0])
                 continue;
 
-            ass_process_chunk(track, rect->ass, static_cast<int>(strlen(rect->ass)), start_ms + avsub.start_display_time, avsub.end_display_time - avsub.start_display_time);
+            ass_process_chunk(track.get(), rect->ass, static_cast<int>(strlen(rect->ass)), start_ms + avsub.start_display_time, avsub.end_display_time - avsub.start_display_time);
         }
 
         avsubtitle_free(&avsub);
-        av_packet_unref(packet);
+        av_packet_unref(packet.get());
     }
 
-    av_packet_free(&packet);
-    avcodec_free_context(&avctx);
-    avformat_close_input(&fctx);
-
     if (read_ret != AVERROR_EOF) {
-        char av_error[AV_ERROR_MAX_STRING_SIZE] = { 0 };
+        error = "av_read_frame failed: " + avErrorString(read_ret) + ".";
 
-        if (av_strerror(read_ret, av_error, AV_ERROR_MAX_STRING_SIZE))
-            snprintf(av_error, AV_ERROR_MAX_STRING_SIZE, "unknown error %d", read_ret);
-
-        snprintf(error, error_size, "av_read_frame failed: %s.", av_error);
-        ass_free_track(track);
         return nullptr;
     }
 
     if (failed_decoding > 0) {
-        snprintf(error, error_size, "failed to decode %d events out of %d. Are you sure '%s' is the correct charset?", failed_decoding, total_events, charset);
-        ass_free_track(track);
+        error = "failed to decode " + std::to_string(failed_decoding) + " events out of " + std::to_string(total_events) + ". Are you sure '" + charset + "' is the correct charset?";
+
         return nullptr;
     }
 
-    return track;
+    return track.release();
 }

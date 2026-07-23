@@ -19,9 +19,10 @@
 #include <cinttypes>
 #include <cstdarg>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
-#include <ctime>
+#include <memory>
+#include <optional>
+#include <string>
 
 #include <ass/ass.h>
 
@@ -43,80 +44,39 @@
     ((srcA * 255 * srcRGB + (dstRGB * dstA * (255 - srcA))) / outA)
 
 
-struct AssTime {
-    time_t seconds;
-    int milliseconds;
-};
-typedef struct AssTime AssTime;
-
+/* Only the things rendering a frame needs. Everything the arguments are turned
+   into is used while the filter is being created and nothing more. The order
+   the members are declared in is the order they have to be destroyed in: the
+   track belongs to the library, and the renderer uses both. */
 struct AssData {
-    VSNode *node;
-    VSVideoInfo vi[2];
+    VSNode *node = nullptr;
+    VSVideoInfo vi[2] = { };
 
-    int lastn;
-    VSFrame *lastframe;
+    int lastn = -1;
+    VSFrame *lastframe = nullptr;
 
-    const char *file;
-    const char *text;
-    const char *style;
-    const char *charset;
-    const char *fontdir;
-    double scale;
-    double linespacing;
-    double sar;
-    int margins[4];
-    intptr_t debuglevel;
-
-    ASS_Track *ass;
-    ASS_Library *ass_library;
-    ASS_Renderer *ass_renderer;
-
-    int startframe;
-    int endframe;
+    AssLibraryPtr ass_library;
+    AssRendererPtr ass_renderer;
+    AssTrackPtr ass;
 };
-typedef struct AssData AssData;
 
-static char *strrepl(const char *in, const char *str, const char *repl)
+
+static std::string replaceAll(const std::string &in, const std::string &from, const std::string &to)
 {
-    size_t in_len = strlen(in);
-    size_t str_len = strlen(str);
-    size_t repl_len = strlen(repl);
-    size_t siz, count = 0;
-    char *res, *outptr;
-    const char *inptr;
+    if(from.empty())
+        return in;
 
-    inptr = in;
+    std::string out;
+    size_t position = 0;
 
-    if(str_len) {
-        while((inptr = strstr(inptr, str))) {
-            count++;
-            inptr += str_len;
-        }
+    for(size_t match; (match = in.find(from, position)) != std::string::npos; position = match + from.size()) {
+        out.append(in, position, match - position);
+        out.append(to);
     }
 
-    siz = in_len + 1;
-    if(repl_len > str_len)
-        siz += count * (repl_len - str_len);
+    out.append(in, position, std::string::npos);
 
-    res = (char *)malloc(siz);
-
-    outptr = res;
-    inptr = in;
-
-    while(count--) {
-        const char *match = strstr(inptr, str);
-        size_t prefix_len = match - inptr;
-
-        memcpy(outptr, inptr, prefix_len);
-        outptr += prefix_len;
-        memcpy(outptr, repl, repl_len);
-        outptr += repl_len;
-        inptr = match + str_len;
-    }
-
-    strcpy(outptr, inptr);
-
-    return res;
+    return out;
 }
 
 static void assDebugCallback(int level, const char *fmt, va_list va, void *data)
@@ -203,7 +163,7 @@ static const VSFrame *VS_CC assGetFrame(int n, int activationReason,
 
         ts = (int64_t)n * 1000 * d->vi[0].fpsDen / d->vi[0].fpsNum;
 
-        img = ass_render_frame(d->ass_renderer, d->ass, ts, &changed);
+        img = ass_render_frame(d->ass_renderer.get(), d->ass.get(), ts, &changed);
 
         if (changed) {
             VSFrame *dst = vsapi->newVideoFrame(&d->vi[0].format,
@@ -234,284 +194,236 @@ static void VS_CC assFree(void *instanceData, VSCore *core, const VSAPI *vsapi)
     AssData *d = (AssData *)instanceData;
     vsapi->freeNode(d->node);
     vsapi->freeFrame(d->lastframe);
-    ass_free_track(d->ass);
-    ass_renderer_done(d->ass_renderer);
-    ass_library_done(d->ass_library);
     delete d;
 }
 
-static int frameToTime(int frame, int64_t fpsNum, int64_t fpsDen, char *str, size_t str_size)
+static std::optional<std::string> frameToTime(int frame, int64_t fpsNum, int64_t fpsDen)
 {
-    int64_t timeint, hours, minutes, seconds, centiseconds;
-    int printed;
-
     if(frame < 0 || fpsNum <= 0 || fpsDen <= 0)
-        return 0;
+        return {};
 
-    if(frame != 0 && (INT64_MAX / fpsDen) < ((int64_t)frame * 100)) {
-        //Overflow would occur
-        return 0;
-    }
-    else {
-        timeint = (int64_t)frame * 100 * fpsDen / fpsNum;
-    }
+    if(frame != 0 && (INT64_MAX / fpsDen) < ((int64_t)frame * 100))
+        return {}; // Overflow would occur
+
+    int64_t timeint = (int64_t)frame * 100 * fpsDen / fpsNum;
 
     // Not using gmtime(), which wraps around after 24 hours and can fail outright.
-    centiseconds = timeint % 100;
-    seconds = timeint / 100;
-    minutes = seconds / 60;
-    hours = minutes / 60;
+    int64_t centiseconds = timeint % 100;
+    int64_t seconds = timeint / 100;
+    int64_t minutes = seconds / 60;
+    int64_t hours = minutes / 60;
 
-    printed = snprintf(str, str_size, "%" PRId64 ":%02" PRId64 ":%02" PRId64 ".%02" PRId64,
-                       hours, minutes % 60, seconds % 60, centiseconds);
+    char str[64];
+    snprintf(str, sizeof(str), "%" PRId64 ":%02" PRId64 ":%02" PRId64 ".%02" PRId64,
+             hours, minutes % 60, seconds % 60, centiseconds);
 
-    if(printed < 0 || (size_t)printed >= str_size) {
-        // Leave nothing behind, the caller tells the times apart by their contents.
-        if(str_size)
-            str[0] = '\0';
-
-        return 0;
-    }
-
-    return 1;
+    return std::string(str);
 }
-
-
-char *convertToUtf8(const char *file_name, const char *charset, int64_t *file_size, char *error, size_t error_size);
-ASS_Track *convertToASS(const char *file_name, const char *contents, size_t contents_size, ASS_Library *ass_library, const char *user_style, const char *charset, char *error, size_t error_size);
 
 
 static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
                                   VSCore *core, const VSAPI *vsapi)
 {
     AssData d;
-    AssData *data;
-    int err, i;
+    int err;
 
-    const char *filter_name = (const char *)userData;
+    const std::string filter_name = (const char *)userData;
 
-#define ERROR_SIZE 512
-    char error[ERROR_SIZE] = { 0 };
     // Only the first problem found is reported.
-#define SET_ERROR(...) do { if(!error[0]) snprintf(error, ERROR_SIZE, __VA_ARGS__); } while(0)
+    std::string error;
+    auto setError = [&](const std::string &message) {
+        if(error.empty())
+            error = filter_name + ": " + message;
+    };
+    auto fail = [&](const std::string &message) {
+        vsapi->mapSetError(out, (filter_name + ": " + message).c_str());
+        vsapi->freeNode(d.node);
+    };
 
-    d.ass = NULL;
-    d.lastn = -1;
     d.node = vsapi->mapGetNode(in, "clip", 0, 0);
     d.vi[0] = *vsapi->getVideoInfo(d.node);
 
     if (d.vi[0].format.colorFamily == cfUndefined || !d.vi[0].width || !d.vi[0].height)
-        SET_ERROR("%s: clip must have known format and dimensions.", filter_name);
+        setError("clip must have known format and dimensions.");
 
     if (!d.vi[0].fpsNum || !d.vi[0].fpsDen)
-        SET_ERROR("%s: clip must have a known constant frame rate.", filter_name);
+        setError("clip must have a known constant frame rate.");
 
     vsapi->getVideoFormatByID(&d.vi[0].format, pfRGB24, core);
     d.vi[1] = d.vi[0];
     vsapi->getVideoFormatByID(&d.vi[1].format, pfGray8, core);
 
-    d.lastframe = NULL;
+    std::optional<std::string> file;
+    std::string text;
+    int startframe = 0;
+    int endframe = 0;
 
-    d.file = vsapi->mapGetData(in, "file", 0, &err);
+    if(const char *file_arg = vsapi->mapGetData(in, "file", 0, &err); !err) {
+        file = file_arg;
+    } else {
+        text = vsapi->mapGetData(in, "text", 0, &err);
 
-    if(err) {
-        d.file = NULL;
-        d.text = vsapi->mapGetData(in, "text", 0, &err);
-
-        d.startframe = vsapi->mapGetIntSaturated(in, "start", 0, &err);
+        startframe = vsapi->mapGetIntSaturated(in, "start", 0, &err);
         if (err) {
-            d.startframe = 0;
+            startframe = 0;
         }
-        else if(d.startframe < 0) {
-            SET_ERROR("%s: start must not be negative", filter_name);
+        else if(startframe < 0) {
+            setError("start must not be negative");
         }
-        else if(d.startframe >= d.vi[0].numFrames) {
-            SET_ERROR("%s: start must be smaller than the clip length", filter_name);
+        else if(startframe >= d.vi[0].numFrames) {
+            setError("start must be smaller than the clip length");
         }
 
 
-        d.endframe = vsapi->mapGetIntSaturated(in, "end", 0, &err);
+        endframe = vsapi->mapGetIntSaturated(in, "end", 0, &err);
         if(err) {
-            d.endframe = d.vi[0].numFrames;
+            endframe = d.vi[0].numFrames;
         }
-        else if(d.endframe > d.vi[0].numFrames) {
-            SET_ERROR("%s: end must be smaller than the clip length", filter_name);
+        else if(endframe > d.vi[0].numFrames) {
+            setError("end must be smaller than the clip length");
         }
-        else if(!(d.startframe < d.endframe)) {
-            SET_ERROR("%s: end must be larger than start", filter_name);
+        else if(!(startframe < endframe)) {
+            setError("end must be larger than start");
         }
     }
 
-    d.style = vsapi->mapGetData(in, "style", 0, &err);
+    std::optional<std::string> style;
 
-    if(err && !d.file) {
-        d.style = "sans-serif,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,7,10,10,10,1";
-    }
+    if(const char *style_arg = vsapi->mapGetData(in, "style", 0, &err); !err)
+        style = style_arg;
+    else if(!file)
+        style = "sans-serif,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,7,10,10,10,1";
 
-    d.charset = vsapi->mapGetData(in, "charset", 0, &err);
+    const char *charset_arg = vsapi->mapGetData(in, "charset", 0, &err);
+    const std::string charset = err ? "UTF-8" : charset_arg;
+
+    const char *fontdir = vsapi->mapGetData(in, "fontdir", 0, &err);
+    if(err)
+        fontdir = nullptr;
+
+    double scale = vsapi->mapGetFloat(in, "scale", 0, &err);
 
     if(err)
-        d.charset = "UTF-8";
+        scale = 1;
 
-    d.fontdir = vsapi->mapGetData(in, "fontdir", 0, &err);
+    if(scale <= 0)
+        setError("scale must be greater than 0");
 
-    if(err)
-        d.fontdir = 0;
+    double linespacing = vsapi->mapGetFloat(in, "linespacing", 0, &err);
 
-    d.scale = vsapi->mapGetFloat(in, "scale", 0, &err);
+    if(linespacing < 0)
+        setError("linespacing must be positive");
 
-    if(err)
-        d.scale = 1;
+    double sar = vsapi->mapGetFloat(in, "sar", 0, &err);
 
-    if(d.scale <= 0)
-        SET_ERROR("%s: scale must be greater than 0", filter_name);
-
-    d.linespacing = vsapi->mapGetFloat(in, "linespacing", 0, &err);
-
-    if(d.linespacing < 0)
-        SET_ERROR("%s: linespacing must be positive", filter_name);
-
-    d.sar = vsapi->mapGetFloat(in, "sar", 0, &err);
-
-    if(d.sar < 0)
-        SET_ERROR("%s: sar must be positive", filter_name);
+    if(sar < 0)
+        setError("sar must be positive");
 
     int num_margins = vsapi->mapNumElements(in, "margins");
 
     if(num_margins > -1 && num_margins != 4)
-        SET_ERROR("%s: margins must have exactly 4 elements", filter_name);
+        setError("margins must have exactly 4 elements");
 
-    for(i = 0; i < 4; i++) {
-        d.margins[i] = vsapi->mapGetIntSaturated(in, "margins", i, &err);
+    int margins[4] = { };
+
+    for(int i = 0; i < 4; i++) {
+        margins[i] = vsapi->mapGetIntSaturated(in, "margins", i, &err);
 
         if(err) {
-            d.margins[i] = 0;
-        } else if(d.margins[i] < 0) {
-            SET_ERROR("%s: margins must be positive", filter_name);
+            margins[i] = 0;
+        } else if(margins[i] < 0) {
+            setError("margins must be positive");
             break;
         }
     }
 
-    d.debuglevel = vsapi->mapGetInt(in, "debuglevel", 0, &err);
+    intptr_t debuglevel = (intptr_t)vsapi->mapGetInt(in, "debuglevel", 0, &err);
 
-    if(error[0]) {
-        vsapi->mapSetError(out, error);
+    if(!error.empty()) {
+        vsapi->mapSetError(out, error.c_str());
         vsapi->freeNode(d.node);
         return;
     }
 
-    d.ass_library = ass_library_init();
+    d.ass_library.reset(ass_library_init());
 
     if(!d.ass_library) {
-        snprintf(error, ERROR_SIZE, "%s: failed to initialize ASS library", filter_name);
-        vsapi->mapSetError(out, error);
-        vsapi->freeNode(d.node);
+        fail("failed to initialize ASS library");
         return;
     }
 
-    ass_set_message_cb(d.ass_library, assDebugCallback, (void *)d.debuglevel);
-    ass_set_extract_fonts(d.ass_library, 0);
-    ass_set_style_overrides(d.ass_library, 0);
+    ass_set_message_cb(d.ass_library.get(), assDebugCallback, (void *)debuglevel);
+    ass_set_extract_fonts(d.ass_library.get(), 0);
+    ass_set_style_overrides(d.ass_library.get(), 0);
 
-    d.ass_renderer = ass_renderer_init(d.ass_library);
+    d.ass_renderer.reset(ass_renderer_init(d.ass_library.get()));
 
     if(!d.ass_renderer) {
-        snprintf(error, ERROR_SIZE, "%s: failed to initialize ASS renderer", filter_name);
-        vsapi->mapSetError(out, error);
-        vsapi->freeNode(d.node);
-        ass_library_done(d.ass_library);
+        fail("failed to initialize ASS renderer");
         return;
     }
 
-    ass_set_font_scale(d.ass_renderer, d.scale);
-    ass_set_frame_size(d.ass_renderer, d.vi[0].width, d.vi[0].height);
-    ass_set_storage_size(d.ass_renderer, d.vi[0].width, d.vi[0].height);
-    ass_set_margins(d.ass_renderer,
-                    d.margins[0], d.margins[1], d.margins[2], d.margins[3]);
-    ass_set_use_margins(d.ass_renderer, 0);
+    ass_set_font_scale(d.ass_renderer.get(), scale);
+    ass_set_frame_size(d.ass_renderer.get(), d.vi[0].width, d.vi[0].height);
+    ass_set_storage_size(d.ass_renderer.get(), d.vi[0].width, d.vi[0].height);
+    ass_set_margins(d.ass_renderer.get(),
+                    margins[0], margins[1], margins[2], margins[3]);
+    ass_set_use_margins(d.ass_renderer.get(), 0);
 
-    if(d.linespacing)
-        ass_set_line_spacing(d.ass_renderer, d.linespacing);
+    if(linespacing)
+        ass_set_line_spacing(d.ass_renderer.get(), linespacing);
 
-    if(d.sar) {
-        ass_set_pixel_aspect(d.ass_renderer,
+    if(sar) {
+        ass_set_pixel_aspect(d.ass_renderer.get(),
                              (double)d.vi[0].width /
-                             d.vi[0].height * d.sar);
+                             d.vi[0].height * sar);
     }
 
-    if(d.fontdir)
-        ass_set_fonts_dir(d.ass_library, d.fontdir);
+    if(fontdir)
+        ass_set_fonts_dir(d.ass_library.get(), fontdir);
 
-    ass_set_fonts(d.ass_renderer, NULL, NULL, 1, NULL, 1);
+    ass_set_fonts(d.ass_renderer.get(), NULL, NULL, 1, NULL, 1);
 
-    if(d.file == NULL) {
-#define BUFFER_SIZE 32
-        char *str, *text, x[BUFFER_SIZE], y[BUFFER_SIZE], start[BUFFER_SIZE] = { 0 }, end[BUFFER_SIZE] = { 0 };
-        size_t siz;
-        const char *fmt = "[Script Info]\n"
-                          "ScriptType: v4.00+\n"
-                          "PlayResX: %s\n"
-                          "PlayResY: %s\n"
-                          "[V4+ Styles]\n"
-                          "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-                          "Style: Default,%s\n"
-                          "[Events]\n"
-                          "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
-                          "Dialogue: 0,%s,%s,Default,,0,0,0,,%s\n";
+    if(!file) {
+        std::optional<std::string> start = frameToTime(startframe, d.vi[0].fpsNum, d.vi[0].fpsDen);
+        std::optional<std::string> end = frameToTime(endframe, d.vi[0].fpsNum, d.vi[0].fpsDen);
 
-        snprintf(x, BUFFER_SIZE, "%d", d.vi[0].width);
-        snprintf(y, BUFFER_SIZE, "%d", d.vi[0].height);
-
-        if (!frameToTime(d.startframe, d.vi[0].fpsNum, d.vi[0].fpsDen, start, BUFFER_SIZE) ||
-            !frameToTime(d.endframe, d.vi[0].fpsNum, d.vi[0].fpsDen, end, BUFFER_SIZE)) {
-            snprintf(error, ERROR_SIZE, "%s: Unable to calculate %s time", filter_name, start[0] ? "end" : "start");
-            vsapi->mapSetError(out, error);
-            vsapi->freeNode(d.node);
-            ass_renderer_done(d.ass_renderer);
-            ass_library_done(d.ass_library);
+        if (!start || !end) {
+            fail(std::string("Unable to calculate ") + (start ? "end" : "start") + " time");
             return;
         }
 
         // Normalize CRLF and lone CR line endings first so no stray \r
         // ends up in the dialogue line.
-        char *lf_text = strrepl(d.text, "\r\n", "\n");
-        char *cr_text = strrepl(lf_text, "\r", "\n");
-        free(lf_text);
-        text = strrepl(cr_text, "\n", "\\N");
-        free(cr_text);
+        std::string dialogue = replaceAll(replaceAll(replaceAll(text, "\r\n", "\n"), "\r", "\n"), "\n", "\\N");
 
-        siz = (strlen(fmt) + strlen(x) + strlen(y) + strlen(d.style) +
-               strlen(start) + strlen(end) + strlen(text)) * sizeof(char);
+        std::string script =
+            "[Script Info]\n"
+            "ScriptType: v4.00+\n"
+            "PlayResX: " + std::to_string(d.vi[0].width) + "\n"
+            "PlayResY: " + std::to_string(d.vi[0].height) + "\n"
+            "[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+            "Style: Default," + *style + "\n"
+            "[Events]\n"
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+            "Dialogue: 0," + *start + "," + *end + ",Default,,0,0,0,," + dialogue + "\n";
 
-        str = (char *)malloc(siz);
-        snprintf(str, siz, fmt, x, y, d.style, start, end, text);
-
-        free(text);
-
-        d.ass = ass_new_track(d.ass_library);
-        ass_process_data(d.ass, str, strlen(str));
-
-        free(str);
+        d.ass.reset(ass_new_track(d.ass_library.get()));
+        ass_process_data(d.ass.get(), script.data(), (int)script.size());
     } else {
-        snprintf(error, ERROR_SIZE, "%s: ", filter_name);
-
-        int64_t contents_size;
-        char *contents = convertToUtf8(d.file, d.charset, &contents_size, error + strlen(error), ERROR_SIZE - strlen(error));
+        std::string conversion_error;
+        std::optional<std::string> contents = convertToUtf8(*file, charset, conversion_error);
 
         if (contents) {
-            d.ass = ass_read_memory(d.ass_library, contents, contents_size, NULL);
+            d.ass.reset(ass_read_memory(d.ass_library.get(), contents->data(), contents->size(), NULL));
 
             if (!d.ass)
-                d.ass = convertToASS(d.file, contents, contents_size, d.ass_library, d.style, d.charset, error + strlen(error), ERROR_SIZE - strlen(error));
-
-            free(contents);
+                d.ass.reset(convertToASS(*file, *contents, d.ass_library.get(), style ? style->c_str() : nullptr, charset, conversion_error));
         }
 
-        if (!contents || !d.ass) {
-            vsapi->mapSetError(out, error);
-            vsapi->freeNode(d.node);
-            ass_renderer_done(d.ass_renderer);
-            ass_library_done(d.ass_library);
+        if (!d.ass) {
+            fail(conversion_error);
             return;
         }
     }
@@ -536,10 +448,11 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
 
     d.lastframe = frame;
 
-    data = new AssData(d);
+    VSNode *node = d.node;
+    AssData *data = new AssData(std::move(d));
 
-    VSFilterDependency deps[] = {{ d.node, rpStrictSpatial }};
-    vsapi->createVideoFilter(out, filter_name, d.vi, assGetFrame, assFree,
+    VSFilterDependency deps[] = {{ node, rpStrictSpatial }};
+    vsapi->createVideoFilter(out, filter_name.c_str(), data->vi, assGetFrame, assFree,
                         fmUnordered, deps, 1, data, core);
 
     if (vsapi->mapGetError(out)) {
@@ -554,16 +467,11 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
     if (blend) {
         VSNode *subs = vsapi->mapGetNode(out, "clip", 0, NULL);
 
-        blendSubtitles(d.node, subs, in, out, filter_name, error, ERROR_SIZE, core, vsapi);
+        blendSubtitles(node, subs, in, out, filter_name, core, vsapi);
 
         vsapi->freeNode(subs);
-
-        if (vsapi->mapGetError(out))
-            return;
     }
 }
-
-void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi);
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
     vspapi->configPlugin("biz.srsfckn.subtext", "sub",

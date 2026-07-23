@@ -1,173 +1,147 @@
 #include <cerrno>
-#include <cinttypes>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
+#include <string>
 #include <system_error>
 
 #include <iconv.h>
 
+#include "common.h"
+
+
+namespace {
+
+class IconvDescriptor {
+    iconv_t descriptor;
+
+public:
+    IconvDescriptor(const char *to, const char *from) : descriptor(iconv_open(to, from)) { }
+
+    ~IconvDescriptor() {
+        if (*this)
+            iconv_close(descriptor);
+    }
+
+    IconvDescriptor(const IconvDescriptor &) = delete;
+    IconvDescriptor &operator=(const IconvDescriptor &) = delete;
+
+    explicit operator bool() const { return descriptor != (iconv_t)-1; }
+    operator iconv_t() const { return descriptor; }
+};
+
+} // namespace
 
 
 // Function stolen from libass.
-static char *sub_recode(char *data, size_t *size, const char *codepage, char *error, size_t error_size) {
-    iconv_t icdsc;
-    const char *tocp = "UTF-8";
-    char *outbuf;
+static std::optional<std::string> subRecode(const std::string &data, const std::string &codepage, std::string &error) {
+    IconvDescriptor descriptor("UTF-8", codepage.c_str());
+    if (!descriptor) {
+        error = "failed to open iconv descriptor.";
 
-    if ((icdsc = iconv_open(tocp, codepage)) == (iconv_t) (-1)) {
-        snprintf(error, error_size, "failed to open iconv descriptor.");
-
-        return NULL;
+        return {};
     }
 
-    {
-        // The extra byte is for the terminating null byte, which iconv doesn't
-        // write itself. Growing by a fixed amount when the input is empty
-        // guarantees progress.
-        size_t grow = *size ? *size : 64;
-        size_t osize = *size + 1;
-        size_t ileft = *size;
-        size_t oleft = osize - 1;
-        char *ip;
-        char *op;
+    // Growing by a fixed amount when the input is empty guarantees progress.
+    const size_t grow = data.size() ? data.size() : 64;
+
+    std::string converted(data.size() + 1, '\0');
+
+    // iconv wants a mutable pointer even though it only reads the input.
+    char *ip = const_cast<char *>(data.data());
+    char *op = converted.data();
+    size_t ileft = data.size();
+    size_t oleft = converted.size();
+    bool clear = false;
+
+    while (true) {
         size_t rc;
-        int clear = 0;
 
-        outbuf = (char *)malloc(osize);
-        if (!outbuf) {
-            snprintf(error, error_size, "failed to allocate %zu bytes for iconv.", osize);
-
-            goto out;
+        if (ileft) {
+            rc = iconv(descriptor, &ip, &ileft, &op, &oleft);
+        } else {
+            // Clear the conversion state and leave.
+            clear = true;
+            rc = iconv(descriptor, nullptr, nullptr, &op, &oleft);
         }
 
-        ip = data;
-        op = outbuf;
-
-        while (1) {
-            if (ileft)
-                rc = iconv(icdsc, &ip, &ileft, &op, &oleft);
-            else {              // clear the conversion state and leave
-                clear = 1;
-                rc = iconv(icdsc, NULL, NULL, &op, &oleft);
-            }
-            if (rc == (size_t) (-1)) {
-                if (errno == E2BIG) {
-                    size_t offset = op - outbuf;
-                    char *nbuf = (char *)realloc(outbuf, osize + grow);
-                    if (!nbuf) {
-                        free(outbuf);
-                        outbuf = NULL;
-                        snprintf(error, error_size, "failed to reallocate %zu bytes for iconv.", osize + grow);
-                        goto out;
-                    }
-                    outbuf = nbuf;
-                    op = outbuf + offset;
-                    osize += grow;
-                    oleft += grow;
-                } else {
-                    snprintf(error, error_size, "failed to convert subtitle file to UTF8, at byte %zu.", (size_t)(ip - data));
-                    free(outbuf);
-                    outbuf = NULL;
-                    goto out;
-                }
-            } else if (clear)
+        if (rc != (size_t)-1) {
+            if (clear)
                 break;
+
+            continue;
         }
-        outbuf[osize - oleft - 1] = 0;
-        *size = osize - oleft - 1;
+
+        if (errno != E2BIG) {
+            error = "failed to convert subtitle file to UTF8, at byte " + std::to_string(ip - data.data()) + ".";
+
+            return {};
+        }
+
+        size_t used = converted.size() - oleft;
+        converted.resize(converted.size() + grow);
+        op = converted.data() + used;
+        oleft = converted.size() - used;
     }
 
-out:
-    if (icdsc != (iconv_t) (-1)) {
-        (void) iconv_close(icdsc);
-    }
+    converted.resize(converted.size() - oleft);
 
-    return outbuf;
+    return converted;
 }
 
 
-static int isUtf8(const char *charset) {
-    size_t length = strlen(charset);
-    if (length != 4 && length != 5)
-        return 0;
+static bool isUtf8(const std::string &charset) {
+    std::string upper;
 
-    char charset_upper[10] = { 0 };
+    for (char c : charset)
+        upper += (c >= 'a' && c <= 'z') ? c - ('a' - 'A') : c;
 
-    int diff = 'a' - 'A';
-    for (size_t i = 0; i < length; i++) {
-        charset_upper[i] = charset[i];
-        if (charset[i] >= 'a' && charset[i] <= 'z')
-            charset_upper[i] -= diff;
-    }
-
-    return strcmp(charset_upper, "UTF8") == 0 ||
-           strcmp(charset_upper, "UTF-8") == 0;
+    return upper == "UTF8" || upper == "UTF-8";
 }
 
 
-char *convertToUtf8(const char *file_name, const char *charset, int64_t *file_size, char *error, size_t error_size) {
+std::optional<std::string> convertToUtf8(const std::string &file_name, const std::string &charset, std::string &error) {
     /* The name is UTF-8, which is not what a path is built from by default. */
     std::filesystem::path path = std::filesystem::u8path(file_name);
 
     std::error_code ec;
     uintmax_t size = std::filesystem::file_size(path, ec);
     if (ec) {
-        snprintf(error, error_size, "failed to obtain the size of the subtitle file: %s.", ec.message().c_str());
+        error = "failed to obtain the size of the subtitle file: " + ec.message() + ".";
 
-        return nullptr;
+        return {};
     }
 
     /* The whole file has to fit in memory and in a single read. */
     if (size > static_cast<uintmax_t>(SIZE_MAX) ||
         size > static_cast<uintmax_t>(std::numeric_limits<std::streamsize>::max())) {
-        snprintf(error, error_size, "the subtitle file is too large.");
+        error = "the subtitle file is too large.";
 
-        return nullptr;
+        return {};
     }
 
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        snprintf(error, error_size, "failed to open subtitle file.");
+        error = "failed to open subtitle file.";
 
-        return nullptr;
+        return {};
     }
 
-    *file_size = static_cast<int64_t>(size);
-
-    /* Zero sized allocations are allowed to return nothing at all. */
-    char *contents = (char *)malloc(size ? static_cast<size_t>(size) : 1);
-    if (!contents) {
-        snprintf(error, error_size, "failed to allocate %" PRIuMAX " bytes for the contents of the subtitle file.", size);
-
-        return nullptr;
-    }
+    std::string contents(static_cast<size_t>(size), '\0');
 
     /* Short reads leave the stream in a failed state, so the amount that was
        read doesn't have to be compared against the size again. */
-    file.read(contents, static_cast<std::streamsize>(size));
+    file.read(contents.data(), static_cast<std::streamsize>(size));
     if (!file) {
-        snprintf(error, error_size, "failed to read the contents of the subtitle file.");
+        error = "failed to read the contents of the subtitle file.";
 
-        free(contents);
-
-        return nullptr;
+        return {};
     }
 
-
-    if (charset && !isUtf8(charset)) {
-        size_t recoded_size = static_cast<size_t>(size);
-        char *utf8_contents = sub_recode(contents, &recoded_size, charset, error, error_size);
-        free(contents);
-        contents = utf8_contents;
-
-        if (contents)
-            *file_size = static_cast<int64_t>(recoded_size);
-    }
+    if (!isUtf8(charset))
+        return subRecode(contents, charset, error);
 
     return contents;
 }

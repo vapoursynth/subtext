@@ -6,10 +6,7 @@
 #include <string>
 #include <vector>
 
-extern "C" {
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-}
+#include "ffmpeg.h"
 
 #include <VapourSynth4.h>
 #include <VSConstants4.h>
@@ -17,16 +14,13 @@ extern "C" {
 
 #include "common.h"
 
-
 static const int64_t unused_colour = (int64_t)1 << 42;
 
-
 typedef struct Subtitle {
-    std::vector<AVPacket *> packets;
+    std::vector<AVPacketPtr> packets;
     int start_frame;
     int end_frame; // Actually first frame where subtitle is not displayed.
 } Subtitle;
-
 
 typedef struct ImageFileData {
     std::string filter_name;
@@ -49,9 +43,8 @@ typedef struct ImageFileData {
 
     bool flatten;
 
-    AVCodecContext *avctx;
+    AVCodecContextPtr avctx;
 } ImageFileData;
-
 
 static int findSubtitleIndex(int frame, const std::vector<Subtitle> &subtitles) {
     for (size_t i = 0; i < subtitles.size(); i++)
@@ -60,7 +53,6 @@ static int findSubtitleIndex(int frame, const std::vector<Subtitle> &subtitles) 
 
     return -1;
 }
-
 
 static void makePaletteGray(uint32_t *palette) {
     for (int i = 0; i < AVPALETTE_COUNT; i++) {
@@ -74,7 +66,6 @@ static void makePaletteGray(uint32_t *palette) {
         palette[i] = (a << 24) | (g << 16) | (g << 8) | g;
     }
 }
-
 
 static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
     (void)frameData;
@@ -107,9 +98,7 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
                     AVSubtitle avsub;
 
                     for (size_t i = 0; i < sub.packets.size(); i++) {
-                        AVPacket *packet = sub.packets[i];
-
-                        avcodec_decode_subtitle2(d->avctx, &avsub, &got_subtitle, packet);
+                        avcodec_decode_subtitle2(d->avctx.get(), &avsub, &got_subtitle, sub.packets[i].get());
 
                         if (got_subtitle)
                             avsubtitle_free(&avsub);
@@ -124,9 +113,7 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
             AVSubtitle avsub;
 
             for (size_t i = 0; i < sub.packets.size(); i++) {
-                AVPacket *packet = sub.packets[i];
-
-                if (avcodec_decode_subtitle2(d->avctx, &avsub, &got_subtitle, packet) < 0) {
+                if (avcodec_decode_subtitle2(d->avctx.get(), &avsub, &got_subtitle, sub.packets[i].get()) < 0) {
                     vsapi->setFilterError((d->filter_name + ": Failed to decode subtitle.").c_str(), frameCtx);
 
                     vsapi->freeFrame(rgb);
@@ -245,7 +232,6 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
     return nullptr;
 }
 
-
 static void VS_CC imageFileFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
     (void)core;
 
@@ -257,21 +243,13 @@ static void VS_CC imageFileFree(void *instanceData, VSCore *core, const VSAPI *v
     vsapi->freeFrame(d->blank_alpha);
     vsapi->freeFrame(d->last_frame);
 
-    for (auto &sub : d->subtitles)
-        for (auto &packet : sub.packets)
-            av_packet_free(&packet);
-
-    avcodec_free_context(&d->avctx);
-
     delete d;
 }
-
 
 static bool isSupportedCodecID(AVCodecID codec_id) {
     return codec_id == AV_CODEC_ID_DVD_SUBTITLE ||
            codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE;
 }
-
 
 static int timestampToFrameNumber(int64_t pts, const AVRational &time_base, int64_t fpsnum, int64_t fpsden) {
     int64_t num = time_base.num;
@@ -283,7 +261,6 @@ static int timestampToFrameNumber(int64_t pts, const AVRational &time_base, int6
 
     return (int)(num / den);
 }
-
 
 /*
 static void printTimestamp(int64_t pts, const AVRational &time_base, bool end) {
@@ -302,7 +279,6 @@ static void printTimestamp(int64_t pts, const AVRational &time_base, bool end) {
         fprintf(stdout, " --> ");
 }
 */
-
 
 void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
     (void)userData;
@@ -368,34 +344,22 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
 
     vsapi->getVideoFormatByID(&d.vi.format, pfRGB24, core);
 
-
     av_log_set_level(AV_LOG_PANIC);
 
     int ret = 0;
 
-    AVFormatContext *fctx = nullptr;
+    AVFormatContextPtr fctx;
 
     try {
-        ret = avformat_open_input(&fctx, file, nullptr, nullptr);
+        ret = openInput(fctx, file);
         if (ret < 0)
             throw std::string("avformat_open_input failed: ");
 
-        ret = avformat_find_stream_info(fctx, NULL);
+        ret = avformat_find_stream_info(fctx.get(), nullptr);
         if (ret < 0)
             throw std::string("avformat_find_stream_info failed: ");
     } catch (const std::string &e) {
-        char av_error[AV_ERROR_MAX_STRING_SIZE] = { 0 };
-        std::string error;
-
-        if (!av_strerror(ret, av_error, AV_ERROR_MAX_STRING_SIZE))
-            error = av_error;
-        else
-            error = "unknown error " + std::to_string(ret);
-
-        vsapi->mapSetError(out, (d.filter_name + ": " + e + error).c_str());
-
-        if (fctx)
-            avformat_close_input(&fctx);
+        vsapi->mapSetError(out, (d.filter_name + ": " + e + avErrorString(ret) + ".").c_str());
 
         vsapi->freeNode(d.clip);
 
@@ -406,8 +370,6 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
         fctx->iformat->name != std::string("sup")) {
         vsapi->mapSetError(out, (d.filter_name + ": unsupported file format '" + fctx->iformat->name + "'.").c_str());
 
-        avformat_close_input(&fctx);
-
         vsapi->freeNode(d.clip);
 
         return;
@@ -415,8 +377,6 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
 
     if (fctx->nb_streams == 0) {
         vsapi->mapSetError(out, (d.filter_name + ": no streams found.").c_str());
-
-        avformat_close_input(&fctx);
 
         vsapi->freeNode(d.clip);
 
@@ -461,7 +421,7 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
         if (!decoder)
             throw std::string("failed to find decoder for '") + avcodec_get_name(codec_id) + "'.";
 
-        d.avctx = avcodec_alloc_context3(decoder);
+        d.avctx.reset(avcodec_alloc_context3(decoder));
         if (!d.avctx)
             throw std::string("failed to allocate AVCodecContext.");
 
@@ -472,16 +432,11 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
             memcpy(d.avctx->extradata, fctx->streams[stream_index]->codecpar->extradata, extradata_size);
         }
 
-        ret = avcodec_open2(d.avctx, decoder, nullptr);
+        ret = avcodec_open2(d.avctx.get(), decoder, nullptr);
         if (ret < 0)
             throw std::string("failed to open AVCodecContext.");
     } catch (const std::string &e) {
         vsapi->mapSetError(out, (d.filter_name + ": " + e).c_str());
-
-        avformat_close_input(&fctx);
-
-        if (d.avctx)
-            avcodec_free_context(&d.avctx);
 
         vsapi->freeNode(d.clip);
 
@@ -494,10 +449,6 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
     if (d.vi.width <= 0 || d.vi.height <= 0) {
         vsapi->mapSetError(out, (d.filter_name + ": failed to determine the dimensions of the selected stream.").c_str());
 
-        avformat_close_input(&fctx);
-
-        avcodec_free_context(&d.avctx);
-
         vsapi->freeNode(d.clip);
 
         return;
@@ -505,23 +456,23 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
 
     Subtitle current_subtitle = { };
 
-    AVPacket *packet = av_packet_alloc();
+    AVPacketPtr packet(av_packet_alloc());
 
     AVSubtitle avsub;
 
     int read_ret;
 
-    while ((read_ret = av_read_frame(fctx, packet)) == 0) {
+    while ((read_ret = av_read_frame(fctx.get(), packet.get())) == 0) {
         if (packet->stream_index != stream_index) {
-            av_packet_unref(packet);
+            av_packet_unref(packet.get());
             continue;
         }
 
         int got_avsub = 0;
 
-        ret = avcodec_decode_subtitle2(d.avctx, &avsub, &got_avsub, packet);
+        ret = avcodec_decode_subtitle2(d.avctx.get(), &avsub, &got_avsub, packet.get());
         if (ret < 0) {
-            av_packet_unref(packet);
+            av_packet_unref(packet.get());
             continue;
         }
 
@@ -529,7 +480,7 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
             const AVRational &time_base = fctx->streams[stream_index]->time_base;
 
             if (avsub.num_rects) {
-                current_subtitle.packets.push_back(av_packet_clone(packet));
+                current_subtitle.packets.emplace_back(av_packet_clone(packet.get()));
 
                 int64_t start_time = current_subtitle.packets.front()->pts;
                 if (fctx->streams[stream_index]->codecpar->codec_id == AV_CODEC_ID_DVD_SUBTITLE) {
@@ -543,52 +494,30 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
 
                 current_subtitle.start_frame = timestampToFrameNumber(start_time, time_base, d.vi.fpsNum, d.vi.fpsDen);
 
-                d.subtitles.push_back(current_subtitle);
+                d.subtitles.push_back(std::move(current_subtitle));
                 current_subtitle.packets.clear();
             } else {
                 // The first AVSubtitle may be empty, leaving d.subtitles empty here.
                 if (!d.subtitles.empty() && !current_subtitle.packets.empty())
                     d.subtitles.back().end_frame = timestampToFrameNumber(current_subtitle.packets.front()->pts, time_base, d.vi.fpsNum, d.vi.fpsDen);
 
-                for (auto p : current_subtitle.packets)
-                    av_packet_free(&p);
-
                 current_subtitle.packets.clear();
             }
 
             avsubtitle_free(&avsub);
         } else {
-            current_subtitle.packets.push_back(av_packet_clone(packet));
+            current_subtitle.packets.emplace_back(av_packet_clone(packet.get()));
         }
 
         // av_read_frame() hands out a new reference every time and the clones
         // taken above hold their own, so this one must always be released.
-        av_packet_unref(packet);
+        av_packet_unref(packet.get());
     }
-
-    av_packet_free(&packet);
-
-    // Packets that never turned into a subtitle picture.
-    for (auto p : current_subtitle.packets)
-        av_packet_free(&p);
 
     current_subtitle.packets.clear();
 
     if (read_ret != AVERROR_EOF) {
-        char av_error[AV_ERROR_MAX_STRING_SIZE] = { 0 };
-
-        if (av_strerror(read_ret, av_error, AV_ERROR_MAX_STRING_SIZE))
-            snprintf(av_error, AV_ERROR_MAX_STRING_SIZE, "unknown error %d", read_ret);
-
-        vsapi->mapSetError(out, (d.filter_name + ": av_read_frame failed: " + av_error + ".").c_str());
-
-        for (auto &sub : d.subtitles)
-            for (auto &p : sub.packets)
-                av_packet_free(&p);
-
-        avformat_close_input(&fctx);
-
-        avcodec_free_context(&d.avctx);
+        vsapi->mapSetError(out, (d.filter_name + ": av_read_frame failed: " + avErrorString(read_ret) + ".").c_str());
 
         vsapi->freeNode(d.clip);
 
@@ -597,11 +526,6 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
 
     if (d.subtitles.size() == 0) {
         vsapi->mapSetError(out, (d.filter_name + ": no usable subtitle pictures found.").c_str());
-
-        avformat_close_input(&fctx);
-
-        if (d.avctx)
-            avcodec_free_context(&d.avctx);
 
         vsapi->freeNode(d.clip);
 
@@ -619,7 +543,6 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
                 d.subtitles[i].end_frame = d.vi.numFrames;
         }
     }
-
 
     d.blank_rgb = vsapi->newVideoFrame(&d.vi.format, d.vi.width, d.vi.height, nullptr, core);
     VSVideoFormat blank_alpha_format;
@@ -640,19 +563,16 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
 
     d.last_subtitle = INT_MIN;
 
-
     d.flatten = !!vsapi->mapGetInt(in, "flatten", 0, &err);
     if (d.flatten)
         d.vi.numFrames = (int)d.subtitles.size();
 
-    data = new ImageFileData(d);
+    data = new ImageFileData(std::move(d));
 
-    vsapi->createVideoFilter(out, d.filter_name.c_str(), &d.vi, imageFileGetFrame, imageFileFree, fmUnordered, nullptr, 0, data, core);
+    vsapi->createVideoFilter(out, data->filter_name.c_str(), &data->vi, imageFileGetFrame, imageFileFree, fmUnordered, nullptr, 0, data, core);
 
     if (vsapi->mapGetError(out)) {
         imageFileFree(data, core, vsapi);
-
-        avformat_close_input(&fctx);
 
         return;
     }
@@ -661,7 +581,7 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
     if (err)
         blend = true;
 
-    if (d.flatten)
+    if (data->flatten)
         blend = false;
 
     if (blend) {
@@ -675,31 +595,24 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
         VSMap *vsret = vsapi->invoke(std_plugin, "PropToClip", args);
         vsapi->freeMap(args);
         if (vsapi->mapGetError(vsret)) {
-            vsapi->mapSetError(out, (d.filter_name + ": " + vsapi->mapGetError(vsret)).c_str());
+            vsapi->mapSetError(out, (data->filter_name + ": " + vsapi->mapGetError(vsret)).c_str());
             vsapi->freeMap(vsret);
             vsapi->freeNode(subs);
-            avformat_close_input(&fctx);
 
             return;
         }
 
         vsapi->freeMap(vsret);
 
-#define ERROR_SIZE 512
-        char error[ERROR_SIZE] = { 0 };
-
-        blendSubtitles(d.clip, subs, in, out, d.filter_name.c_str(), error, ERROR_SIZE, core, vsapi);
-#undef ERROR_SIZE
+        blendSubtitles(data->clip, subs, in, out, data->filter_name, core, vsapi);
 
         vsapi->freeNode(subs);
 
         if (vsapi->mapGetError(out)) {
-            avformat_close_input(&fctx);
 
             return;
         }
     }
-
 
     if (info) {
         std::string desc("Supported subtitle streams:\n");
@@ -737,7 +650,6 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
 
         desc.pop_back();
 
-
         VSPlugin *text_plugin = vsapi->getPluginByID("com.vapoursynth.text", core);
 
         VSMap *args = vsapi->createMap();
@@ -749,7 +661,6 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
         if (vsapi->mapGetError(vsret)) {
             vsapi->mapSetError(out, (d.filter_name + ": failed to invoke text.Text: " + vsapi->mapGetError(vsret)).c_str());
             vsapi->freeMap(vsret);
-            avformat_close_input(&fctx);
             return;
         }
 
@@ -757,6 +668,4 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
         vsapi->freeMap(vsret);
     }
 
-
-    avformat_close_input(&fctx);
 }
