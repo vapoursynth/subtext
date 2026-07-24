@@ -442,7 +442,7 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
         memset(vsapi->getWritePtr(frame, plane), 0, vsapi->getStride(frame, plane) * vsapi->getFrameHeight(frame, plane));
     memset(vsapi->getWritePtr(alpha, 0), 0, vsapi->getStride(alpha, 0) *vsapi->getFrameHeight(alpha, 0));
 
-    vsapi->mapSetInt(vsapi->getFramePropertiesRW(alpha), "_Range", VSC_RANGE_FULL, maAppend);
+    vsapi->mapSetInt(vsapi->getFramePropertiesRW(alpha), "_Range", VSC_RANGE_FULL, maReplace);
 
     vsapi->mapConsumeFrame(vsapi->getFramePropertiesRW(frame), "_Alpha", alpha, maAppend);
 
@@ -451,9 +451,8 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
     VSNode *node = d.node;
     AssData *data = new AssData(std::move(d));
 
-    VSFilterDependency deps[] = {{ node, rpStrictSpatial }};
     vsapi->createVideoFilter(out, filter_name.c_str(), data->vi, assGetFrame, assFree,
-                        fmUnordered, deps, 1, data, core);
+                        fmUnordered, nullptr, 0, data, core);
 
     if (vsapi->mapGetError(out)) {
         assFree(data, core, vsapi);

@@ -433,6 +433,14 @@ void blendSubtitles(VSNode *clip, VSNode *subs, const VSMap *in, VSMap *out, con
     vsapi->mapSetNode(args, "clip", subs, maReplace);
     ret = vsapi->invoke(std_plugin, "PropToClip", args);
     vsapi->freeMap(args);
+    if (vsapi->mapGetError(ret)) {
+        /* PropToClip renders the first frame to find out what the alpha looks
+           like, so this fails when the subtitles themselves can't be rendered. */
+        fail(vsapi->mapGetError(ret));
+        vsapi->freeMap(ret);
+        return;
+    }
+
     VSNode *alpha = vsapi->mapGetNode(ret, "clip", 0, NULL);
     vsapi->freeMap(ret);
 

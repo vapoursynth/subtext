@@ -495,7 +495,6 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
                 current_subtitle.start_frame = timestampToFrameNumber(start_time, time_base, d.vi.fpsNum, d.vi.fpsDen);
 
                 d.subtitles.push_back(std::move(current_subtitle));
-                current_subtitle.packets.clear();
             } else {
                 // The first AVSubtitle may be empty, leaving d.subtitles empty here.
                 if (!d.subtitles.empty() && !current_subtitle.packets.empty())
@@ -587,31 +586,12 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
     if (blend) {
         VSNode *subs = vsapi->mapGetNode(out, "clip", 0, NULL);
 
-        VSPlugin *std_plugin = vsapi->getPluginByID("com.vapoursynth.std", core);
-
-        VSMap *args = vsapi->createMap();
-        vsapi->mapSetNode(args, "clip", subs, maReplace);
-
-        VSMap *vsret = vsapi->invoke(std_plugin, "PropToClip", args);
-        vsapi->freeMap(args);
-        if (vsapi->mapGetError(vsret)) {
-            vsapi->mapSetError(out, (data->filter_name + ": " + vsapi->mapGetError(vsret)).c_str());
-            vsapi->freeMap(vsret);
-            vsapi->freeNode(subs);
-
-            return;
-        }
-
-        vsapi->freeMap(vsret);
-
         blendSubtitles(data->clip, subs, in, out, data->filter_name, core, vsapi);
 
         vsapi->freeNode(subs);
 
-        if (vsapi->mapGetError(out)) {
-
+        if (vsapi->mapGetError(out))
             return;
-        }
     }
 
     if (info) {
@@ -624,7 +604,7 @@ void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
                 continue;
 
             char stream_id[100] = { 0 };
-            snprintf(stream_id, 99, "0x%x", fctx->streams[i]->id);
+            snprintf(stream_id, sizeof(stream_id), "0x%x", (unsigned)fctx->streams[i]->id);
 
             desc += "Id: ";
             desc += stream_id;
