@@ -233,8 +233,18 @@ ASS_Track *convertToASS(const std::string &file_name, const std::string &content
 
 
     AVPacketPtr packet(av_packet_alloc());
+    if (!packet) {
+        error = "failed to allocate AVPacket.";
+
+        return nullptr;
+    }
 
     AssTrackPtr track(ass_read_memory(ass_library, ass_file.data(), ass_file.size(), nullptr));
+    if (!track) {
+        error = "libass failed to parse the subtitle header. Is '" + file_name + "' really a subtitle file?";
+
+        return nullptr;
+    }
 
     AVSubtitle avsub;
 

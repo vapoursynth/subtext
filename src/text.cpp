@@ -410,6 +410,12 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
             "Dialogue: 0," + *start + "," + *end + ",Default,,0,0,0,," + dialogue + "\n";
 
         d.ass.reset(ass_new_track(d.ass_library.get()));
+
+        if (!d.ass) {
+            fail("failed to create ASS track");
+            return;
+        }
+
         ass_process_data(d.ass.get(), script.data(), (int)script.size());
     } else {
         std::string conversion_error;
