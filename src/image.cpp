@@ -67,9 +67,7 @@ static void makePaletteGray(uint32_t *palette) {
     }
 }
 
-static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
-    (void)frameData;
-
+static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void *instanceData, [[maybe_unused]] void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
     ImageFileData *d = (ImageFileData *) instanceData;
 
     if (activationReason == arInitial) {
@@ -232,9 +230,7 @@ static const VSFrame *VS_CC imageFileGetFrame(int n, int activationReason, void 
     return nullptr;
 }
 
-static void VS_CC imageFileFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
-    (void)core;
-
+static void VS_CC imageFileFree(void *instanceData, [[maybe_unused]] VSCore *core, const VSAPI *vsapi) {
     ImageFileData *d = (ImageFileData *)instanceData;
 
     vsapi->freeNode(d->clip);
@@ -280,9 +276,7 @@ static void printTimestamp(int64_t pts, const AVRational &time_base, bool end) {
 }
 */
 
-void VS_CC imageFileCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
-    (void)userData;
-
+void VS_CC imageFileCreate(const VSMap *in, VSMap *out, [[maybe_unused]] void *userData, VSCore *core, const VSAPI *vsapi) {
     ImageFileData d = { };
     ImageFileData *data;
 

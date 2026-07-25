@@ -149,9 +149,9 @@ static void assRender(VSFrame *dst, VSFrame *alpha, const VSAPI *vsapi,
     }
 }
 
-static const VSFrame *VS_CC assGetFrame(int n, int activationReason,
-        void *instanceData, void **frameData,
-        VSFrameContext *frameCtx, VSCore *core,
+static const VSFrame *VS_CC assGetFrame(int n, [[maybe_unused]] int activationReason,
+        void *instanceData, [[maybe_unused]] void **frameData,
+        [[maybe_unused]] VSFrameContext *frameCtx, VSCore *core,
         const VSAPI *vsapi)
 {
     AssData *d = (AssData *) instanceData;
@@ -189,7 +189,7 @@ static const VSFrame *VS_CC assGetFrame(int n, int activationReason,
     return vsapi->addFrameRef(d->lastframe);
 }
 
-static void VS_CC assFree(void *instanceData, VSCore *core, const VSAPI *vsapi)
+static void VS_CC assFree(void *instanceData, [[maybe_unused]] VSCore *core, const VSAPI *vsapi)
 {
     AssData *d = (AssData *)instanceData;
     vsapi->freeNode(d->node);

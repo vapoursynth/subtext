@@ -226,10 +226,8 @@ static VSNode *getConversion(MatchColorimetryData *d, const ConversionKey &key, 
 }
 
 
-static const VSFrame *VS_CC matchColorimetryGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+static const VSFrame *VS_CC matchColorimetryGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, [[maybe_unused]] VSCore *core, const VSAPI *vsapi) {
     MatchColorimetryData *d = (MatchColorimetryData *)instanceData;
-
-    (void)core;
 
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(n, d->prop_src, frameCtx);
@@ -302,10 +300,8 @@ static const VSFrame *VS_CC matchColorimetryGetFrame(int n, int activationReason
 }
 
 
-static void VS_CC matchColorimetryFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
+static void VS_CC matchColorimetryFree(void *instanceData, [[maybe_unused]] VSCore *core, const VSAPI *vsapi) {
     MatchColorimetryData *d = (MatchColorimetryData *)instanceData;
-
-    (void)core;
 
     vsapi->freeNode(d->prop_src);
     vsapi->freeMap(d->base_args);
