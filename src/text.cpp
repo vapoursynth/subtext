@@ -55,6 +55,8 @@ struct AssData {
     int lastn = -1;
     VSFrame *lastframe = nullptr;
 
+    bool adapt_sar = false;
+
     AssLibraryPtr ass_library;
     AssRendererPtr ass_renderer;
     AssTrackPtr ass;
@@ -149,17 +151,58 @@ static void assRender(VSFrame *dst, VSFrame *alpha, const VSAPI *vsapi,
     }
 }
 
-static const VSFrame *VS_CC assGetFrame(int n, [[maybe_unused]] int activationReason,
+/* Reads the pixel aspect ratio out of the frame properties of the clip.
+   Square pixels unless the frame says otherwise. */
+static double frameToPixelAspect(const VSFrame *src, const VSAPI *vsapi)
+{
+    const VSMap *props = vsapi->getFramePropertiesRO(src);
+    int num_err, den_err;
+
+    int64_t sar_num = vsapi->mapGetInt(props, "_SARNum", 0, &num_err);
+    int64_t sar_den = vsapi->mapGetInt(props, "_SARDen", 0, &den_err);
+
+    if(num_err || den_err || sar_num <= 0 || sar_den <= 0)
+        return 1;
+
+    return (double)sar_num / (double)sar_den;
+}
+
+static const VSFrame *VS_CC assGetFrame(int n, int activationReason,
         void *instanceData, [[maybe_unused]] void **frameData,
-        [[maybe_unused]] VSFrameContext *frameCtx, VSCore *core,
+        VSFrameContext *frameCtx, VSCore *core,
         const VSAPI *vsapi)
 {
     AssData *d = (AssData *) instanceData;
+
+    /* Without a frame of the clip there is nothing to wait for, so the frame
+       is produced right away in the arInitial call. */
+    if(d->adapt_sar) {
+        if(activationReason == arInitial) {
+            vsapi->requestFrameFilter(n, d->node, frameCtx);
+
+            return NULL;
+        }
+
+        if(activationReason != arAllFramesReady)
+            return NULL;
+    }
 
     if(n != d->lastn) {
         ASS_Image *img;
         int64_t ts = 0;
         int changed;
+
+        if(d->adapt_sar) {
+            const VSFrame *src = vsapi->getFrameFilter(n, d->node, frameCtx);
+            double par = frameToPixelAspect(src, vsapi);
+            vsapi->freeFrame(src);
+
+            /* Setting the same value again costs nothing, libass only
+               reconfigures when the aspect ratio actually changes. A change
+               empties its caches, which makes the rendered images differ, so
+               the change detection below picks it up. */
+            ass_set_pixel_aspect(d->ass_renderer.get(), par);
+        }
 
         ts = (int64_t)n * 1000 * d->vi[0].fpsDen / d->vi[0].fpsNum;
 
@@ -314,10 +357,14 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
     if(linespacing < 0)
         setError("linespacing must be positive");
 
+    /* Zero, which is also what an absent argument gives, means the pixel
+       aspect ratio of each frame of the clip is used instead. */
     double sar = vsapi->mapGetFloat(in, "sar", 0, &err);
 
     if(sar < 0)
         setError("sar must be positive");
+
+    d.adapt_sar = !sar;
 
     int num_margins = vsapi->mapNumElements(in, "margins");
 
@@ -373,11 +420,8 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
     if(linespacing)
         ass_set_line_spacing(d.ass_renderer.get(), linespacing);
 
-    if(sar) {
-        ass_set_pixel_aspect(d.ass_renderer.get(),
-                             (double)d.vi[0].width /
-                             d.vi[0].height * sar);
-    }
+    if(sar)
+        ass_set_pixel_aspect(d.ass_renderer.get(), sar);
 
     if(fontdir)
         ass_set_fonts_dir(d.ass_library.get(), fontdir);
@@ -457,8 +501,12 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
     VSNode *node = d.node;
     AssData *data = new AssData(std::move(d));
 
+    /* A frame of the clip is only ever needed to look up its pixel aspect
+       ratio, so with sar given nothing is requested from it at all. */
+    VSFilterDependency deps[] = {{ node, rpStrictSpatial }};
+
     vsapi->createVideoFilter(out, filter_name.c_str(), data->vi, assGetFrame, assFree,
-                        fmUnordered, nullptr, 0, data, core);
+                        fmUnordered, data->adapt_sar ? deps : nullptr, data->adapt_sar ? 1 : 0, data, core);
 
     if (vsapi->mapGetError(out)) {
         assFree(data, core, vsapi);

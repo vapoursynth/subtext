@@ -45,7 +45,20 @@ Subtext is a subtitle renderer that uses libass and ffmpeg.
          allowed. The order is top, bottom, left, right.
 
       sar
-         Storage aspect ratio.
+         Sample aspect ratio, also known as the pixel aspect ratio: the
+         ratio of the width of a pixel to its height. 1 means square
+         pixels.
+
+         By default this follows the ``_SARNum`` and ``_SARDen`` frame
+         properties of *clip*, individually for every frame, so
+         anamorphic video gets subtitles that look right once the video
+         is displayed at its intended shape. Frames without those
+         properties are treated as having square pixels.
+
+         Setting it uses the given ratio for every frame instead. That
+         also means no frame of *clip* has to be looked at, which is
+         worth doing when blend=False and producing the frames of *clip*
+         is expensive.
 
       style
          Custom ASS style for subtitle formats other than ASS. If empty
