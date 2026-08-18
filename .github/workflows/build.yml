@@ -33,7 +33,7 @@ jobs:
           else
             apk add --no-cache libass-dev nasm
           fi &&
-          git clone https://github.com/FFmpeg/FFmpeg.git --branch n8.1 --depth 1 &&
+          git clone https://github.com/FFmpeg/FFmpeg.git --branch n9.0 --depth 1 &&
           cd FFmpeg &&
           ./configure --enable-gpl --enable-version3 --disable-programs --disable-doc --disable-avdevice --disable-swresample --disable-swscale --disable-avfilter --disable-encoders --disable-muxers --enable-pic --disable-debug &&
           make -j$(nproc) &&
@@ -42,7 +42,7 @@ jobs:
           rm -rf FFmpeg
         CIBW_BEFORE_ALL_MACOS: >
           brew install libass nasm &&
-          git clone https://github.com/FFmpeg/FFmpeg.git --branch n8.1 --depth 1 &&
+          git clone https://github.com/FFmpeg/FFmpeg.git --branch n9.0 --depth 1 &&
           cd FFmpeg &&
           ./configure --enable-gpl --enable-version3 --disable-programs --disable-doc --disable-avdevice --disable-swresample --disable-swscale --disable-avfilter --disable-encoders --disable-muxers --enable-pic --disable-debug &&
           make -j3 &&
@@ -88,7 +88,7 @@ jobs:
 
     - name: Install FFmpeg
       run: |
-        git clone https://github.com/FFmpeg/FFmpeg.git --branch n8.1 --depth 1
+        git clone https://github.com/FFmpeg/FFmpeg.git --branch n9.0 --depth 1
         pushd FFmpeg
         ./configure --prefix=/clang64 --enable-gpl --enable-version3 --disable-programs --disable-doc --disable-avdevice --disable-swresample --disable-swscale --disable-avfilter --disable-encoders --disable-muxers --cc=clang --cxx=clang++ --pkg-config-flags=--static --enable-pic --disable-debug
         make install -j$(nproc)

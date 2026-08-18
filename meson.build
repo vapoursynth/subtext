@@ -12,7 +12,7 @@ add_project_arguments('-DVS_USE_API_42', language: 'cpp')
 
 deps = [
     dependency('libass', version: '>=0.17.0'),
-    # FFmpeg 8.x
+    # FFmpeg 8.0 or newer
     dependency('libavcodec', version: '>=62'),
     dependency('libavformat', version: '>=62'),
     dependency('libavutil', version: '>=60'),
