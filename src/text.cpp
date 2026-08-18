@@ -17,6 +17,7 @@
  */
 
 #include <cinttypes>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -151,9 +152,9 @@ static void assRender(VSFrame *dst, VSFrame *alpha, const VSAPI *vsapi,
     }
 }
 
-/* Reads the pixel aspect ratio out of the frame properties of the clip.
+/* Reads the sample aspect ratio out of the frame properties of the clip.
    Square pixels unless the frame says otherwise. */
-static double frameToPixelAspect(const VSFrame *src, const VSAPI *vsapi)
+static double frameToSampleAspect(const VSFrame *src, const VSAPI *vsapi)
 {
     const VSMap *props = vsapi->getFramePropertiesRO(src);
     int num_err, den_err;
@@ -165,6 +166,21 @@ static double frameToPixelAspect(const VSFrame *src, const VSAPI *vsapi)
         return 1;
 
     return (double)sar_num / (double)sar_den;
+}
+
+/* Tells libass what the subtitles are laid out for in square pixel
+   resolution: the width of the clip scaled by the SAR at the height the clip
+   already has.
+
+   Only width moves because libass divides width by display scale for blur. */
+static void setLayoutSize(AssData *d, double sar)
+{
+    int layout_x = (int)std::lround(d->vi[0].width * sar);
+
+    if(layout_x <= 0)
+        layout_x = d->vi[0].width;
+
+    ass_set_storage_size(d->ass_renderer.get(), layout_x, d->vi[0].height);
 }
 
 static const VSFrame *VS_CC assGetFrame(int n, int activationReason,
@@ -194,14 +210,14 @@ static const VSFrame *VS_CC assGetFrame(int n, int activationReason,
 
         if(d->adapt_sar) {
             const VSFrame *src = vsapi->getFrameFilter(n, d->node, frameCtx);
-            double par = frameToPixelAspect(src, vsapi);
+            double sar = frameToSampleAspect(src, vsapi);
             vsapi->freeFrame(src);
 
-            /* Setting the same value again costs nothing, libass only
-               reconfigures when the aspect ratio actually changes. A change
-               empties its caches, which makes the rendered images differ, so
-               the change detection below picks it up. */
-            ass_set_pixel_aspect(d->ass_renderer.get(), par);
+            /* Setting the same value again costs nothing, the layout only
+               changes when the aspect ratio does. A change empties the libass
+               caches, which makes the rendered images differ, so the change
+               detection below picks it up. */
+            setLayoutSize(d, sar);
         }
 
         ts = (int64_t)n * 1000 * d->vi[0].fpsDen / d->vi[0].fpsNum;
@@ -412,16 +428,13 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
 
     ass_set_font_scale(d.ass_renderer.get(), scale);
     ass_set_frame_size(d.ass_renderer.get(), d.vi[0].width, d.vi[0].height);
-    ass_set_storage_size(d.ass_renderer.get(), d.vi[0].width, d.vi[0].height);
+    setLayoutSize(&d, sar ? sar : 1);
     ass_set_margins(d.ass_renderer.get(),
                     margins[0], margins[1], margins[2], margins[3]);
     ass_set_use_margins(d.ass_renderer.get(), 0);
 
     if(linespacing)
         ass_set_line_spacing(d.ass_renderer.get(), linespacing);
-
-    if(sar)
-        ass_set_pixel_aspect(d.ass_renderer.get(), sar);
 
     if(fontdir)
         ass_set_fonts_dir(d.ass_library.get(), fontdir);
@@ -477,6 +490,11 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
             return;
         }
     }
+
+    /* A track with LayoutRes headers of its own is laid out for what they say
+       and nothing here reaches it, so not even a frame of the clip is needed. */
+    if(d.ass->LayoutResX > 0 && d.ass->LayoutResY > 0)
+        d.adapt_sar = false;
 
     VSFrame *frame = vsapi->newVideoFrame(&d.vi[0].format,
                                        d.vi[0].width,

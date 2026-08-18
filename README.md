@@ -60,6 +60,11 @@ Subtext is a subtitle renderer that uses libass and ffmpeg.
          worth doing when blend=False and producing the frames of *clip*
          is expensive.
 
+         Subtitles carrying ``LayoutResX`` and ``LayoutResY`` headers
+         have already said what shape they're laid out for, and are
+         rendered to it. In this case, neither frame properties nor this
+         paramater are used.
+
       style
          Custom ASS style for subtitle formats other than ASS. If empty
          (the default), libavcodec's default style is used. This
