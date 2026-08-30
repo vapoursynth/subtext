@@ -60,6 +60,20 @@ Subtext is a subtitle renderer that uses libass and ffmpeg.
          worth doing when blend=False and producing the frames of *clip*
          is expensive.
 
+         Only subtitles this plugin lays out are followed that way:
+         the text given to Subtitle, and formats converted to ASS such
+         as SRT and WebVTT. An ASS file is left exactly as its author
+         wrote it, the way other renderers treat it, so its subtitles
+         are squeezed along with the picture. Setting *sar* asks for
+         the file to be adapted anyway.
+
+         Any compensation only rescales subtitles horizontally, keeping the
+         relationship between font size and height constant.
+
+         Subtitles carrying ``LayoutResX`` and ``LayoutResY`` headers
+         already express the shape they're laid out for and are rendered to it.
+         In this case, neither frame properties nor this parameter are used.
+
       style
          Custom ASS style for subtitle formats other than ASS. If empty
          (the default), libavcodec's default style is used. This

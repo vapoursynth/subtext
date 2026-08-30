@@ -17,6 +17,7 @@
  */
 
 #include <cinttypes>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -56,6 +57,7 @@ struct AssData {
     VSFrame *lastframe = nullptr;
 
     bool adapt_sar = false;
+    bool own_track = false;
 
     AssLibraryPtr ass_library;
     AssRendererPtr ass_renderer;
@@ -151,9 +153,9 @@ static void assRender(VSFrame *dst, VSFrame *alpha, const VSAPI *vsapi,
     }
 }
 
-/* Reads the pixel aspect ratio out of the frame properties of the clip.
+/* Reads the sample aspect ratio out of the frame properties of the clip.
    Square pixels unless the frame says otherwise. */
-static double frameToPixelAspect(const VSFrame *src, const VSAPI *vsapi)
+static double frameToSampleAspect(const VSFrame *src, const VSAPI *vsapi)
 {
     const VSMap *props = vsapi->getFramePropertiesRO(src);
     int num_err, den_err;
@@ -165,6 +167,49 @@ static double frameToPixelAspect(const VSFrame *src, const VSAPI *vsapi)
         return 1;
 
     return (double)sar_num / (double)sar_den;
+}
+
+/* Tells libass what the subtitles are laid out for in square pixel
+   resolution: the width of the clip scaled by the SAR at the height the clip
+   already has.
+
+   Only width moves because libass divides width by display scale for blur. */
+static void setLayoutSize(AssData *d, double sar)
+{
+    int layout_x = (int)std::lround(d->vi[0].width * sar);
+
+    if(layout_x <= 0)
+        layout_x = d->vi[0].width;
+
+    ass_set_storage_size(d->ass_renderer.get(), layout_x, d->vi[0].height);
+
+    /* PlayRes is the coordinate space the subtitles are written in, and libass
+       measures drawings, letter spacing and borders against it, so it has to
+       describe the same display shape the layout resolution does or only the
+       glyphs come out compensated. The vertical half is left alone because
+       font sizes are relative to it; only PlayResX moves. Tracks read from a
+       subtitle file say what they were written for and are never touched. */
+    if(d->own_track && d->ass && d->ass->PlayResY > 0) {
+        int play_x = (int)std::lround((double)d->ass->PlayResY *
+                                      layout_x / d->vi[0].height);
+
+        if(play_x > 0 && play_x != d->ass->PlayResX) {
+            /* Style margins are measured in the same units, so they have to
+               follow PlayResX to keep covering the same part of the frame. */
+            if(d->ass->PlayResX > 0) {
+                double fix = (double)play_x / d->ass->PlayResX;
+
+                for(int i = 0; i < d->ass->n_styles; i++) {
+                    d->ass->styles[i].MarginL =
+                        (int)std::lround(d->ass->styles[i].MarginL * fix);
+                    d->ass->styles[i].MarginR =
+                        (int)std::lround(d->ass->styles[i].MarginR * fix);
+                }
+            }
+
+            d->ass->PlayResX = play_x;
+        }
+    }
 }
 
 static const VSFrame *VS_CC assGetFrame(int n, int activationReason,
@@ -194,14 +239,14 @@ static const VSFrame *VS_CC assGetFrame(int n, int activationReason,
 
         if(d->adapt_sar) {
             const VSFrame *src = vsapi->getFrameFilter(n, d->node, frameCtx);
-            double par = frameToPixelAspect(src, vsapi);
+            double sar = frameToSampleAspect(src, vsapi);
             vsapi->freeFrame(src);
 
-            /* Setting the same value again costs nothing, libass only
-               reconfigures when the aspect ratio actually changes. A change
-               empties its caches, which makes the rendered images differ, so
-               the change detection below picks it up. */
-            ass_set_pixel_aspect(d->ass_renderer.get(), par);
+            /* Setting the same value again costs nothing, the layout only
+               changes when the aspect ratio does. A change empties the libass
+               caches, which makes the rendered images differ, so the change
+               detection below picks it up. */
+            setLayoutSize(d, sar);
         }
 
         ts = (int64_t)n * 1000 * d->vi[0].fpsDen / d->vi[0].fpsNum;
@@ -412,16 +457,12 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
 
     ass_set_font_scale(d.ass_renderer.get(), scale);
     ass_set_frame_size(d.ass_renderer.get(), d.vi[0].width, d.vi[0].height);
-    ass_set_storage_size(d.ass_renderer.get(), d.vi[0].width, d.vi[0].height);
     ass_set_margins(d.ass_renderer.get(),
                     margins[0], margins[1], margins[2], margins[3]);
     ass_set_use_margins(d.ass_renderer.get(), 0);
 
     if(linespacing)
         ass_set_line_spacing(d.ass_renderer.get(), linespacing);
-
-    if(sar)
-        ass_set_pixel_aspect(d.ass_renderer.get(), sar);
 
     if(fontdir)
         ass_set_fonts_dir(d.ass_library.get(), fontdir);
@@ -446,6 +487,7 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
             "ScriptType: v4.00+\n"
             "PlayResX: " + std::to_string(d.vi[0].width) + "\n"
             "PlayResY: " + std::to_string(d.vi[0].height) + "\n"
+            "ScaledBorderAndShadow: yes\n"
             "[V4+ Styles]\n"
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
             "Style: Default," + *style + "\n"
@@ -461,6 +503,8 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
         }
 
         ass_process_data(d.ass.get(), script.data(), (int)script.size());
+
+        d.own_track = true;
     } else {
         std::string conversion_error;
         std::optional<std::string> contents = convertToUtf8(*file, charset, conversion_error);
@@ -468,8 +512,12 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
         if (contents) {
             d.ass.reset(ass_read_memory(d.ass_library.get(), contents->data(), contents->size(), NULL));
 
-            if (!d.ass)
+            if (!d.ass) {
                 d.ass.reset(convertToASS(*file, *contents, d.ass_library.get(), style ? style->c_str() : nullptr, charset, conversion_error));
+
+                /* libavcodec's conversion, not a script anybody authored. */
+                d.own_track = true;
+            }
         }
 
         if (!d.ass) {
@@ -477,6 +525,16 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
             return;
         }
     }
+
+    /* Subtitles read from a file were written for the video the way it is
+       stored, which is how every other renderer treats them, so the aspect of
+       the clip is only followed for the tracks made here. Passing sar asks for
+       it anyway. A track carrying LayoutRes headers says what it's laid out
+       for and wins over both, no rendered frame needed. */
+    if(!d.own_track || (d.ass->LayoutResX > 0 && d.ass->LayoutResY > 0))
+        d.adapt_sar = false;
+
+    setLayoutSize(&d, sar ? sar : 1);
 
     VSFrame *frame = vsapi->newVideoFrame(&d.vi[0].format,
                                        d.vi[0].width,
